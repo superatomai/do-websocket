@@ -1,0 +1,17 @@
+name = "sa-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-02"
+compatibility_flags = ["nodejs_compat"]
+
+[observability.logs]
+enabled = true
+
+# Environment variables (set via wrangler secret or dashboard)
+# These should be set as secrets, not in this file:
+#   wrangler secret put DATABASE_URL
+#   wrangler secret put JWT_SECRET
+#   wrangler secret put CLERK_WEBHOOK_SECRET
+#
+# DATABASE_URL: Your Neon PostgreSQL connection string (same as do-websocket)
+# JWT_SECRET: Secret key for signing/verifying JWTs
+# CLERK_WEBHOOK_SECRET: Signing secret from Clerk Dashboard → Webhooks (starts with whsec_)
