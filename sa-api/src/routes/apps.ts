@@ -6,13 +6,11 @@ import { authMiddleware, adminOnly } from "../middleware/auth";
 
 const appsRouter = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
-appsRouter.use("*", authMiddleware, adminOnly);
-
 /**
  * POST /projects/:projectId/apps
  * Create app in project
  */
-appsRouter.post("/projects/:projectId/apps", async (c) => {
+appsRouter.post("/projects/:projectId/apps", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
   const userId = c.get("userId");
@@ -39,7 +37,7 @@ appsRouter.post("/projects/:projectId/apps", async (c) => {
  * GET /projects/:projectId/apps
  * List all apps in project
  */
-appsRouter.get("/projects/:projectId/apps", async (c) => {
+appsRouter.get("/projects/:projectId/apps", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
 
@@ -55,7 +53,7 @@ appsRouter.get("/projects/:projectId/apps", async (c) => {
  * GET /apps/:appId
  * Get app details
  */
-appsRouter.get("/apps/:appId", async (c) => {
+appsRouter.get("/apps/:appId", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const appId = c.req.param("appId");
 
@@ -76,7 +74,7 @@ appsRouter.get("/apps/:appId", async (c) => {
  * PUT /apps/:appId
  * Update app
  */
-appsRouter.put("/apps/:appId", async (c) => {
+appsRouter.put("/apps/:appId", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const appId = c.req.param("appId");
   const body = await c.req.json<{
@@ -104,7 +102,7 @@ appsRouter.put("/apps/:appId", async (c) => {
  * DELETE /apps/:appId
  * Delete app (cascades permissions via FK)
  */
-appsRouter.delete("/apps/:appId", async (c) => {
+appsRouter.delete("/apps/:appId", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const appId = c.req.param("appId");
 
