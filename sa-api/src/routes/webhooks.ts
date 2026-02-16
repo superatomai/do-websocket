@@ -66,6 +66,10 @@ webhooks.post("/", async (c) => {
       await handleOrganizationDeleted(db, data);
       break;
     }
+    case "organizationMembership.updated": {
+      await handleMembershipUpdated(db, data);
+      break;
+    }
     case "organizationMembership.deleted": {
       await handleMembershipDeleted(db, data);
       break;
@@ -109,22 +113,48 @@ async function handleUserCreated(db: any, data: Record<string, any>) {
     return;
   }
 
-  // Check if user already exists (by clerkId or email)
-  const [existing] = await db
+  // Generate system password: clerkUserId + "_sa_secret"
+  // Frontend uses the same formula after Clerk login to call SA-API /auth/login
+  const systemPassword = `${clerkId}_sa_secret`;
+  const passwordHash = await hashPassword(systemPassword);
+
+  // Check if user already exists by clerkId
+  const [existingByClerkId] = await db
     .select()
     .from(users)
     .where(eq(users.clerkId, clerkId))
     .limit(1);
 
-  if (existing) {
+  if (existingByClerkId) {
     console.log("user.created: user already exists", clerkId);
     return;
   }
 
-  // Generate system password: clerkUserId + "_sa_secret"
-  // Frontend uses the same formula after Clerk login to call SA-API /auth/login
-  const systemPassword = `${clerkId}_sa_secret`;
-  const passwordHash = await hashPassword(systemPassword);
+  // Check if a deactivated user exists with the same email (re-signup)
+  const [existingByEmail] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (existingByEmail) {
+    await db
+      .update(users)
+      .set({
+        clerkId,
+        name,
+        username,
+        passwordHash,
+        isActive: true,
+        orgId: null,
+        role: "member",
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, existingByEmail.id));
+
+    console.log("user.created: reactivated existing user", clerkId, email);
+    return;
+  }
 
   await db.insert(users).values({
     clerkId,
@@ -283,6 +313,32 @@ async function handleOrganizationDeleted(db: any, data: Record<string, any>) {
   }
 
   console.log("organization.deleted: deleted org", clerkId);
+}
+
+async function handleMembershipUpdated(db: any, data: Record<string, any>) {
+  const clerkUserId = data.public_user_data?.user_id as string;
+  const clerkOrgId = data.organization?.id as string;
+  const clerkRole = data.role as string;
+
+  if (!clerkUserId || !clerkOrgId) {
+    console.error("organizationMembership.updated: missing user or org id", data);
+    return;
+  }
+
+  const role = clerkRole === "org:admin" ? "org_admin" : "member";
+
+  const [updated] = await db
+    .update(users)
+    .set({ role, updatedAt: new Date() })
+    .where(eq(users.clerkId, clerkUserId))
+    .returning({ id: users.id });
+
+  if (!updated) {
+    console.error("organizationMembership.updated: user not found", clerkUserId);
+    return;
+  }
+
+  console.log("organizationMembership.updated: updated role to", role, "for", clerkUserId);
 }
 
 async function handleMembershipDeleted(db: any, data: Record<string, any>) {
