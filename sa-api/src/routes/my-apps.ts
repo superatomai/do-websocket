@@ -36,6 +36,8 @@ myApps.get("/", async (c) => {
         projectName: projects.name,
         config: apps.config,
         permission: appPermissions.permission,
+        createdAt: apps.createdAt,
+        updatedAt: apps.updatedAt,
       })
       .from(apps)
       .innerJoin(projects, eq(projects.id, apps.projectId))
@@ -58,6 +60,8 @@ myApps.get("/", async (c) => {
         projectName: projects.name,
         config: apps.config,
         permission: appPermissions.permission,
+        createdAt: apps.createdAt,
+        updatedAt: apps.updatedAt,
       })
       .from(appPermissions)
       .innerJoin(apps, eq(apps.id, appPermissions.appId))
