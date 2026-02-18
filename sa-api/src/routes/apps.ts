@@ -14,9 +14,10 @@ appsRouter.post("/projects/:projectId/apps", authMiddleware, adminOnly, async (c
   const db = c.get("db");
   const projectId = c.req.param("projectId");
   const userId = c.get("userId");
-  const { name, type, config, icon } = await c.req.json<{
+  const { name, type, description, config, icon } = await c.req.json<{
     name: string;
     type: "dashboard" | "app" | "report" | "chat_agent";
+    description?: string;
     config?: Record<string, unknown>;
     icon?: string;
   }>();
@@ -27,7 +28,7 @@ appsRouter.post("/projects/:projectId/apps", authMiddleware, adminOnly, async (c
 
   const [app] = await db
     .insert(apps)
-    .values({ projectId, name, type, config, icon, createdBy: userId })
+    .values({ projectId, name, type, description, config, icon, createdBy: userId })
     .returning();
 
   return c.json(app, 201);
@@ -80,6 +81,7 @@ appsRouter.put("/apps/:appId", authMiddleware, adminOnly, async (c) => {
   const body = await c.req.json<{
     name?: string;
     type?: "dashboard" | "app" | "report" | "chat_agent";
+    description?: string;
     config?: Record<string, unknown>;
     icon?: string;
     isActive?: boolean;

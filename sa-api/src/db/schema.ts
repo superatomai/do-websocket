@@ -115,6 +115,7 @@ export const apps = pgTable("apps", {
     .references(() => projects.id, { onDelete: "cascade" }),
   type: appTypeEnum("type").notNull(),
   name: varchar("name", { length: 255 }).notNull(),
+  description: varchar("description"),
   icon: text("icon"),
   config: jsonb("config"),
   createdBy: uuid("created_by").references(() => users.id, {

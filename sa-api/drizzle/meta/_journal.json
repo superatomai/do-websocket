@@ -15,6 +15,13 @@
       "when": 1770991765551,
       "tag": "0001_fat_vector",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1771404090849,
+      "tag": "0002_hot_tiger_shark",
+      "breakpoints": true
     }
   ]
 }
