@@ -9,7 +9,12 @@ const projectsRouter = new Hono<{
   Variables: AppVariables;
 }>();
 
-projectsRouter.use("*", authMiddleware, adminOnly, orgScopeGuard);
+// Read routes: any authenticated user in the org (including members)
+projectsRouter.get("*", authMiddleware, orgScopeGuard);
+// Write routes: admin only
+projectsRouter.post("*", authMiddleware, adminOnly, orgScopeGuard);
+projectsRouter.put("*", authMiddleware, adminOnly, orgScopeGuard);
+projectsRouter.delete("*", authMiddleware, adminOnly, orgScopeGuard);
 
 /**
  * POST /orgs/:orgId/projects

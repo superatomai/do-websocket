@@ -231,7 +231,8 @@ sso.get("/callback", async (c) => {
     if (!tokenRes.ok) {
       const errBody = await tokenRes.text();
       console.error("[SSO] Token exchange failed:", errBody);
-      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("Token exchange failed")}`);
+      console.error("[SSO] redirect_uri used:", callbackUrl.toString());
+      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("Token exchange failed: " + errBody)}`);
     }
 
     const tokens: OIDCTokenResponse = await tokenRes.json();

@@ -38,7 +38,7 @@ appsRouter.post("/projects/:projectId/apps", authMiddleware, adminOnly, async (c
  * GET /projects/:projectId/apps
  * List all apps in project
  */
-appsRouter.get("/projects/:projectId/apps", authMiddleware, adminOnly, async (c) => {
+appsRouter.get("/projects/:projectId/apps", authMiddleware, async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
 
@@ -54,7 +54,7 @@ appsRouter.get("/projects/:projectId/apps", authMiddleware, adminOnly, async (c)
  * GET /apps/:appId
  * Get app details
  */
-appsRouter.get("/apps/:appId", authMiddleware, adminOnly, async (c) => {
+appsRouter.get("/apps/:appId", authMiddleware, async (c) => {
   const db = c.get("db");
   const appId = c.req.param("appId");
 
