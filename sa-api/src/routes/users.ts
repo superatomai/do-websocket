@@ -2,11 +2,11 @@ import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
 import { users, appPermissions, apps } from "../db/schema";
 import type { Env, AppVariables } from "../types";
-import { authMiddleware, adminOnly } from "../middleware/auth";
+import { authMiddleware, adminOnly, orgScopeGuard } from "../middleware/auth";
 
 const usersRouter = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
-usersRouter.use("*", authMiddleware, adminOnly);
+usersRouter.use("*", authMiddleware, adminOnly, orgScopeGuard);
 
 /**
  * Hash a password using SHA-256 (same as auth login check)
@@ -32,11 +32,21 @@ usersRouter.post("/", async (c) => {
     username: string;
     name: string;
     password: string;
-    role?: "org_admin" | "member";
+    role?: "super_admin" | "org_admin" | "member";
   }>();
 
   if (!email || !username || !name || !password) {
     return c.json({ error: "email, username, name, and password are required" }, 400);
+  }
+
+  // Nobody should create super_admin via this endpoint
+  if (role === "super_admin") {
+    return c.json({ error: "Cannot create super_admin users via this endpoint" }, 403);
+  }
+
+  // Only super_admin can create org_admin users
+  if (role === "org_admin" && c.get("userRole") !== "super_admin") {
+    return c.json({ error: "Only super_admin can create org_admin users" }, 403);
   }
 
   // Check if email already exists
@@ -155,6 +165,11 @@ usersRouter.put("/:userId", async (c) => {
     role?: "org_admin" | "member";
     isActive?: boolean;
   }>();
+
+  // Only super_admin can promote to org_admin
+  if (body.role === "org_admin" && c.get("userRole") !== "super_admin") {
+    return c.json({ error: "Only super_admin can assign org_admin role" }, 403);
+  }
 
   const [updated] = await db
     .update(users)

@@ -101,6 +101,21 @@ auth.get("/me", authMiddleware, async (c) => {
     return c.json({ error: "User not found" }, 404);
   }
 
+  // Super admin: no org, no app list
+  if (user.role === "super_admin") {
+    return c.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        name: user.name,
+        role: user.role,
+      },
+      organization: null,
+      apps: [],
+    });
+  }
+
   const [org] = user.orgId
     ? await db
         .select()

@@ -22,10 +22,15 @@ export const authMiddleware = createMiddleware<{
     const { payload } = await jwtVerify(token, secret);
 
     const userId = payload.userId as string;
-    const orgId = payload.orgId as string;
-    const role = payload.role as "org_admin" | "member";
+    const orgId = (payload.orgId as string) || null;
+    const role = payload.role as "super_admin" | "org_admin" | "member";
 
-    if (!userId || !orgId || !role) {
+    if (!userId || !role) {
+      return c.json({ error: "Invalid token payload" }, 401);
+    }
+
+    // orgId is required for non-super_admin users
+    if (role !== "super_admin" && !orgId) {
       return c.json({ error: "Invalid token payload" }, 401);
     }
 
@@ -40,7 +45,7 @@ export const authMiddleware = createMiddleware<{
 });
 
 /**
- * Middleware that requires the user to be an org_admin.
+ * Middleware that requires the user to be an org_admin or super_admin.
  * Must be used after authMiddleware.
  */
 export const adminOnly = createMiddleware<{
@@ -48,8 +53,45 @@ export const adminOnly = createMiddleware<{
   Variables: AppVariables;
 }>(async (c, next) => {
   const role = c.get("userRole");
-  if (role !== "org_admin") {
-    return c.json({ error: "Forbidden: org_admin role required" }, 403);
+  if (role !== "org_admin" && role !== "super_admin") {
+    return c.json({ error: "Forbidden: admin role required" }, 403);
+  }
+  await next();
+});
+
+/**
+ * Middleware that requires the user to be a super_admin.
+ * Must be used after authMiddleware.
+ */
+export const superAdminOnly = createMiddleware<{
+  Bindings: Env;
+  Variables: AppVariables;
+}>(async (c, next) => {
+  const role = c.get("userRole");
+  if (role !== "super_admin") {
+    return c.json({ error: "Forbidden: super_admin role required" }, 403);
+  }
+  await next();
+});
+
+/**
+ * Middleware that ensures org_admin users can only access resources in their own org.
+ * Super admins bypass this check. Expects :orgId route parameter.
+ * Must be used after authMiddleware.
+ */
+export const orgScopeGuard = createMiddleware<{
+  Bindings: Env;
+  Variables: AppVariables;
+}>(async (c, next) => {
+  const role = c.get("userRole");
+  if (role === "super_admin") {
+    await next();
+    return;
+  }
+  const routeOrgId = c.req.param("orgId");
+  const userOrgId = c.get("orgId");
+  if (routeOrgId && routeOrgId !== userOrgId) {
+    return c.json({ error: "Forbidden: cannot access another organization" }, 403);
   }
   await next();
 });

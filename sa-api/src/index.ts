@@ -4,13 +4,14 @@ import { createDb } from "./db";
 import type { Env, AppVariables } from "./types";
 
 import authRoutes from "./routes/auth";
+import ssoRoutes from "./routes/sso";
+import bootstrapRoutes from "./routes/bootstrap";
 import orgRoutes from "./routes/orgs";
 import usersRoutes from "./routes/users";
 import projectsRoutes from "./routes/projects";
 import appsRoutes from "./routes/apps";
 import permissionsRoutes from "./routes/permissions";
 import myAppsRoutes from "./routes/my-apps";
-import webhookRoutes from "./routes/webhooks";
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -33,11 +34,10 @@ app.get("/health", (c) =>
   })
 );
 
-// ─── Webhooks (no auth — verified via Svix signature) ────
-app.route("/webhooks/clerk", webhookRoutes);
-
 // ─── Routes ──────────────────────────────────────────────
 app.route("/auth", authRoutes);
+app.route("/auth/sso", ssoRoutes);
+app.route("/auth", bootstrapRoutes);
 app.route("/orgs", orgRoutes);
 app.route("/orgs/:orgId/users", usersRoutes);
 app.route("/orgs/:orgId/projects", projectsRoutes);

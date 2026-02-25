@@ -2,14 +2,14 @@ import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
 import { projects, apps } from "../db/schema";
 import type { Env, AppVariables } from "../types";
-import { authMiddleware, adminOnly } from "../middleware/auth";
+import { authMiddleware, adminOnly, orgScopeGuard } from "../middleware/auth";
 
 const projectsRouter = new Hono<{
   Bindings: Env;
   Variables: AppVariables;
 }>();
 
-projectsRouter.use("*", authMiddleware, adminOnly);
+projectsRouter.use("*", authMiddleware, adminOnly, orgScopeGuard);
 
 /**
  * POST /orgs/:orgId/projects

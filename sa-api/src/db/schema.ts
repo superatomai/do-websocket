@@ -14,7 +14,7 @@ import { relations } from "drizzle-orm";
 
 // ─── Enums ───────────────────────────────────────────────
 
-export const userRoleEnum = pgEnum("user_role", ["org_admin", "member"]);
+export const userRoleEnum = pgEnum("user_role", ["super_admin", "org_admin", "member"]);
 
 export const appTypeEnum = pgEnum("app_type", [
   "dashboard",
@@ -29,11 +29,16 @@ export const permissionEnum = pgEnum("permission_level", [
   "admin",
 ]);
 
+export const ssoProviderEnum = pgEnum("sso_provider", [
+  "microsoft_entra",
+  "okta",
+  "generic_oidc",
+]);
+
 // ─── Organizations ───────────────────────────────────────
 
 export const organizations = pgTable("organizations", {
   id: uuid("id").defaultRandom().primaryKey(),
-  clerkId: varchar("clerk_id", { length: 255 }).unique(),
   name: varchar("name", { length: 255 }).notNull(),
   slug: varchar("slug", { length: 100 }).unique().notNull(),
   icon: text("icon"),
@@ -48,19 +53,23 @@ export const organizationsRelations = relations(organizations, ({ many }) => ({
 
 // ─── Users ───────────────────────────────────────────────
 
-export const users = pgTable("users", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  clerkId: varchar("clerk_id", { length: 255 }).unique(),
-  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
-  email: varchar("email", { length: 255 }).unique().notNull(),
-  username: varchar("username", { length: 100 }).unique(),
-  name: varchar("name", { length: 255 }).notNull(),
-  passwordHash: varchar("password_hash", { length: 255 }),
-  role: userRoleEnum("role").default("member").notNull(),
-  isActive: boolean("is_active").default(true).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
+    email: varchar("email", { length: 255 }).unique().notNull(),
+    username: varchar("username", { length: 100 }).unique(),
+    name: varchar("name", { length: 255 }).notNull(),
+    passwordHash: varchar("password_hash", { length: 255 }),
+    ssoSubject: varchar("sso_subject", { length: 500 }),
+    role: userRoleEnum("role").default("member").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("users_org_sso_subject_idx").on(table.orgId, table.ssoSubject)]
+);
 
 export const usersRelations = relations(users, ({ one, many }) => ({
   organization: one(organizations, {
@@ -200,6 +209,31 @@ export const apiKeys = pgTable("api_keys", {
 export const apiKeysRelations = relations(apiKeys, ({ one }) => ({
   organization: one(organizations, {
     fields: [apiKeys.orgId],
+    references: [organizations.id],
+  }),
+}));
+
+// ─── SSO Configs ────────────────────────────────────────
+
+export const ssoConfigs = pgTable("sso_configs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orgId: uuid("org_id")
+    .notNull()
+    .unique()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  provider: ssoProviderEnum("provider").notNull(),
+  clientId: varchar("client_id", { length: 500 }).notNull(),
+  clientSecret: text("client_secret").notNull(),
+  issuerUrl: varchar("issuer_url", { length: 1000 }).notNull(),
+  scopes: varchar("scopes", { length: 500 }).default("openid email profile"),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const ssoConfigsRelations = relations(ssoConfigs, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [ssoConfigs.orgId],
     references: [organizations.id],
   }),
 }));

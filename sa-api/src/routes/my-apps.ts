@@ -25,6 +25,11 @@ myApps.get("/", async (c) => {
 
   let userApps;
 
+  // Super admin has no org — return empty
+  if (userRole === "super_admin") {
+    return c.json([]);
+  }
+
   if (userRole === "org_admin") {
     // Admin gets all active apps in the org
     userApps = await db
@@ -49,7 +54,7 @@ myApps.get("/", async (c) => {
           eq(appPermissions.userId, userId)
         )
       )
-      .where(and(eq(projects.orgId, orgId), eq(apps.isActive, true)));
+      .where(and(eq(projects.orgId, orgId!), eq(apps.isActive, true)));
   } else {
     // Member gets only explicitly permitted apps
     userApps = await db
