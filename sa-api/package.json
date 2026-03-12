@@ -23,9 +23,11 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.0",
+    "@xmldom/xmldom": "^0.8.11",
     "drizzle-orm": "^0.38.0",
     "hono": "^4.6.0",
-    "jose": "^5.9.0"
+    "jose": "^5.9.0",
+    "xml-crypto": "^6.1.2"
   },
   "engines": {
     "node": ">=18.0.0"

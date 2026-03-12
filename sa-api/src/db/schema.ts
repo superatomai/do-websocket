@@ -33,6 +33,7 @@ export const ssoProviderEnum = pgEnum("sso_provider", [
   "microsoft_entra",
   "okta",
   "generic_oidc",
+  "saml",
 ]);
 
 // ─── Organizations ───────────────────────────────────────
@@ -222,10 +223,16 @@ export const ssoConfigs = pgTable("sso_configs", {
     .unique()
     .references(() => organizations.id, { onDelete: "cascade" }),
   provider: ssoProviderEnum("provider").notNull(),
-  clientId: varchar("client_id", { length: 500 }).notNull(),
-  clientSecret: text("client_secret").notNull(),
-  issuerUrl: varchar("issuer_url", { length: 1000 }).notNull(),
+  protocol: varchar("protocol", { length: 10 }).default("oidc").notNull(),
+  // OIDC fields (nullable — not used for SAML configs)
+  clientId: varchar("client_id", { length: 500 }),
+  clientSecret: text("client_secret"),
+  issuerUrl: varchar("issuer_url", { length: 1000 }),
   scopes: varchar("scopes", { length: 500 }).default("openid email profile"),
+  // SAML fields (nullable — not used for OIDC configs)
+  samlIdpEntityId: varchar("saml_idp_entity_id", { length: 1000 }),
+  samlIdpSsoUrl: varchar("saml_idp_sso_url", { length: 1000 }),
+  samlIdpCertificates: jsonb("saml_idp_certificates"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

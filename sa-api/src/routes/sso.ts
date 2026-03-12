@@ -4,6 +4,11 @@ import { SignJWT, jwtVerify, createRemoteJWKSet } from "jose";
 import { users, organizations, ssoConfigs } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware, adminOnly } from "../middleware/auth";
+import {
+  generateRequestId,
+  buildAuthnRequest,
+  deflateAndEncode,
+} from "../lib/saml";
 
 const sso = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -140,6 +145,49 @@ sso.get("/authorize", async (c) => {
     return c.json({ error: "SSO is not configured for this organization" }, 404);
   }
 
+  // ─── Route based on protocol ───
+  if (config.protocol === "saml") {
+    // Delegate to SAML login flow
+    if (!config.samlIdpSsoUrl) {
+      return c.json({ error: "SAML SSO is misconfigured for this organization" }, 500);
+    }
+
+    const requestId = generateRequestId();
+    const baseUrl = new URL(c.req.url);
+    const acsUrl = `${baseUrl.protocol}//${baseUrl.host}/auth/sso/saml/acs`;
+    const spEntityId = `${baseUrl.protocol}//${baseUrl.host}/auth/sso/saml/metadata`;
+
+    const authnRequest = buildAuthnRequest({
+      requestId,
+      acsUrl,
+      spEntityId,
+      idpSsoUrl: config.samlIdpSsoUrl,
+    });
+
+    // Create RelayState JWT
+    const secret = new TextEncoder().encode(c.env.JWT_SECRET);
+    const claims: Record<string, string> = { orgId: org.id, requestId };
+    if (redirectTo) claims.redirectTo = redirectTo;
+    const relayState = await new SignJWT(claims)
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime("10m")
+      .sign(secret);
+
+    const encodedRequest = await deflateAndEncode(authnRequest);
+
+    const samlRedirectUrl = new URL(config.samlIdpSsoUrl);
+    samlRedirectUrl.searchParams.set("SAMLRequest", decodeURIComponent(encodedRequest));
+    samlRedirectUrl.searchParams.set("RelayState", relayState);
+
+    return c.redirect(samlRedirectUrl.toString());
+  }
+
+  // ─── OIDC Flow (existing) ───
+  if (!config.issuerUrl || !config.clientId) {
+    return c.json({ error: "OIDC SSO is misconfigured for this organization" }, 500);
+  }
+
   // Fetch OIDC discovery
   const discovery = await fetchDiscovery(config.issuerUrl);
 
@@ -205,6 +253,10 @@ sso.get("/callback", async (c) => {
 
     if (!config) {
       return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("SSO configuration not found")}`);
+    }
+
+    if (!config.issuerUrl || !config.clientId || !config.clientSecret) {
+      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("OIDC SSO is misconfigured")}`);
     }
 
     // Fetch OIDC discovery
@@ -341,9 +393,12 @@ sso.get("/config", authMiddleware, adminOnly, async (c) => {
     .select({
       id: ssoConfigs.id,
       provider: ssoConfigs.provider,
+      protocol: ssoConfigs.protocol,
       clientId: ssoConfigs.clientId,
       issuerUrl: ssoConfigs.issuerUrl,
       scopes: ssoConfigs.scopes,
+      samlIdpEntityId: ssoConfigs.samlIdpEntityId,
+      samlIdpSsoUrl: ssoConfigs.samlIdpSsoUrl,
       isActive: ssoConfigs.isActive,
       createdAt: ssoConfigs.createdAt,
       updatedAt: ssoConfigs.updatedAt,
@@ -370,22 +425,58 @@ sso.post("/config", authMiddleware, adminOnly, async (c) => {
     return c.json({ error: "SSO config requires an organization context" }, 400);
   }
   const body = await c.req.json<{
-    provider: "microsoft_entra" | "okta" | "generic_oidc";
-    clientId: string;
-    clientSecret: string;
-    issuerUrl: string;
+    // Common
+    provider: "microsoft_entra" | "okta" | "generic_oidc" | "saml";
+    protocol?: "oidc" | "saml";
+    // OIDC fields
+    clientId?: string;
+    clientSecret?: string;
+    issuerUrl?: string;
     scopes?: string;
+    // SAML fields
+    samlIdpEntityId?: string;
+    samlIdpSsoUrl?: string;
+    samlIdpCertificates?: string[];
   }>();
 
-  if (!body.provider || !body.clientId || !body.clientSecret || !body.issuerUrl) {
-    return c.json({ error: "provider, clientId, clientSecret, and issuerUrl are required" }, 400);
-  }
+  const protocol = body.protocol || (body.provider === "saml" ? "saml" : "oidc");
 
-  // Validate the issuer URL by fetching discovery
-  try {
-    await fetchDiscovery(body.issuerUrl);
-  } catch {
-    return c.json({ error: "Could not reach OIDC discovery endpoint at the provided issuerUrl" }, 400);
+  // Validate based on protocol
+  if (protocol === "saml") {
+    if (!body.samlIdpEntityId || !body.samlIdpSsoUrl || !body.samlIdpCertificates?.length) {
+      return c.json(
+        { error: "samlIdpEntityId, samlIdpSsoUrl, and samlIdpCertificates are required for SAML" },
+        400
+      );
+    }
+
+    // Validate SSO URL is HTTPS
+    try {
+      const ssoUrl = new URL(body.samlIdpSsoUrl);
+      if (ssoUrl.protocol !== "https:") {
+        return c.json({ error: "samlIdpSsoUrl must use HTTPS" }, 400);
+      }
+    } catch {
+      return c.json({ error: "samlIdpSsoUrl is not a valid URL" }, 400);
+    }
+  } else {
+    // OIDC validation
+    if (!body.provider || !body.clientId || !body.clientSecret || !body.issuerUrl) {
+      return c.json(
+        { error: "provider, clientId, clientSecret, and issuerUrl are required for OIDC" },
+        400
+      );
+    }
+
+    // Validate the issuer URL by fetching discovery
+    try {
+      await fetchDiscovery(body.issuerUrl);
+    } catch {
+      return c.json(
+        { error: "Could not reach OIDC discovery endpoint at the provided issuerUrl" },
+        400
+      );
+    }
   }
 
   // Check if config already exists
@@ -395,49 +486,69 @@ sso.post("/config", authMiddleware, adminOnly, async (c) => {
     .where(eq(ssoConfigs.orgId, orgId))
     .limit(1);
 
+  const configData =
+    protocol === "saml"
+      ? {
+          provider: body.provider as "saml",
+          protocol: "saml" as const,
+          samlIdpEntityId: body.samlIdpEntityId!,
+          samlIdpSsoUrl: body.samlIdpSsoUrl!,
+          samlIdpCertificates: body.samlIdpCertificates!,
+          // Clear OIDC fields
+          clientId: null,
+          clientSecret: null,
+          issuerUrl: null,
+          scopes: null,
+          isActive: true,
+          updatedAt: new Date(),
+        }
+      : {
+          provider: body.provider as "microsoft_entra" | "okta" | "generic_oidc",
+          protocol: "oidc" as const,
+          clientId: body.clientId!,
+          clientSecret: body.clientSecret!,
+          issuerUrl: body.issuerUrl!,
+          scopes: body.scopes || "openid email profile",
+          // Clear SAML fields
+          samlIdpEntityId: null,
+          samlIdpSsoUrl: null,
+          samlIdpCertificates: null,
+          isActive: true,
+          updatedAt: new Date(),
+        };
+
   if (existing) {
-    // Update existing config
     const [updated] = await db
       .update(ssoConfigs)
-      .set({
-        provider: body.provider,
-        clientId: body.clientId,
-        clientSecret: body.clientSecret,
-        issuerUrl: body.issuerUrl,
-        scopes: body.scopes || "openid email profile",
-        isActive: true,
-        updatedAt: new Date(),
-      })
+      .set(configData)
       .where(eq(ssoConfigs.id, existing.id))
       .returning({
         id: ssoConfigs.id,
         provider: ssoConfigs.provider,
+        protocol: ssoConfigs.protocol,
         clientId: ssoConfigs.clientId,
         issuerUrl: ssoConfigs.issuerUrl,
         scopes: ssoConfigs.scopes,
+        samlIdpEntityId: ssoConfigs.samlIdpEntityId,
+        samlIdpSsoUrl: ssoConfigs.samlIdpSsoUrl,
         isActive: ssoConfigs.isActive,
       });
 
     return c.json({ message: "SSO configuration updated", ...updated });
   }
 
-  // Create new config
   const [created] = await db
     .insert(ssoConfigs)
-    .values({
-      orgId,
-      provider: body.provider,
-      clientId: body.clientId,
-      clientSecret: body.clientSecret,
-      issuerUrl: body.issuerUrl,
-      scopes: body.scopes || "openid email profile",
-    })
+    .values({ orgId, ...configData })
     .returning({
       id: ssoConfigs.id,
       provider: ssoConfigs.provider,
+      protocol: ssoConfigs.protocol,
       clientId: ssoConfigs.clientId,
       issuerUrl: ssoConfigs.issuerUrl,
       scopes: ssoConfigs.scopes,
+      samlIdpEntityId: ssoConfigs.samlIdpEntityId,
+      samlIdpSsoUrl: ssoConfigs.samlIdpSsoUrl,
       isActive: ssoConfigs.isActive,
     });
 

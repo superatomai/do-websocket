@@ -5,6 +5,7 @@ import type { Env, AppVariables } from "./types";
 
 import authRoutes from "./routes/auth";
 import ssoRoutes from "./routes/sso";
+import samlRoutes from "./routes/saml";
 import bootstrapRoutes from "./routes/bootstrap";
 import orgRoutes from "./routes/orgs";
 import usersRoutes from "./routes/users";
@@ -37,6 +38,7 @@ app.get("/health", (c) =>
 // ─── Routes ──────────────────────────────────────────────
 app.route("/auth", authRoutes);
 app.route("/auth/sso", ssoRoutes);
+app.route("/auth/sso/saml", samlRoutes);
 app.route("/auth", bootstrapRoutes);
 app.route("/orgs", orgRoutes);
 app.route("/orgs/:orgId/users", usersRoutes);
