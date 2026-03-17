@@ -44,9 +44,9 @@ usersRouter.post("/", async (c) => {
     return c.json({ error: "Cannot create super_admin users via this endpoint" }, 403);
   }
 
-  // Only super_admin can create org_admin users
-  if (role === "org_admin" && c.get("userRole") !== "super_admin") {
-    return c.json({ error: "Only super_admin can create org_admin users" }, 403);
+  // Only super_admin or org_admin can create org_admin users
+  if (role === "org_admin" && !["super_admin", "org_admin"].includes(c.get("userRole"))) {
+    return c.json({ error: "Only admins can create org_admin users" }, 403);
   }
 
   // Check if email already exists
@@ -166,9 +166,9 @@ usersRouter.put("/:userId", async (c) => {
     isActive?: boolean;
   }>();
 
-  // Only super_admin can promote to org_admin
-  if (body.role === "org_admin" && c.get("userRole") !== "super_admin") {
-    return c.json({ error: "Only super_admin can assign org_admin role" }, 403);
+  // Only super_admin or org_admin can promote to org_admin
+  if (body.role === "org_admin" && !["super_admin", "org_admin"].includes(c.get("userRole"))) {
+    return c.json({ error: "Only admins can assign org_admin role" }, 403);
   }
 
   const [updated] = await db
