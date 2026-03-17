@@ -11,11 +11,13 @@ export const authMiddleware = createMiddleware<{
   Variables: AppVariables;
 }>(async (c, next) => {
   const authHeader = c.req.header("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
-    return c.json({ error: "Missing or invalid Authorization header" }, 401);
-  }
+  const token = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : c.req.query("token");
 
-  const token = authHeader.slice(7);
+  if (!token) {
+    return c.json({ error: "Missing authorization token" }, 401);
+  }
 
   try {
     const secret = new TextEncoder().encode(c.env.JWT_SECRET);

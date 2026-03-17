@@ -13,6 +13,8 @@ import {
   SamlError,
 } from "../lib/saml";
 import { authMiddleware, adminOnly } from "../middleware/auth";
+import { DOMParser } from"@xmldom/xmldom";
+
 
 const saml = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -162,9 +164,19 @@ saml.get("/login", async (c) => {
  * POST /auth/sso/saml/acs
  * Assertion Consumer Service — handles both SP-initiated and IdP-initiated flows.
  */
+
+function extractIssuerFromSamlResponse(xmlString: string): string|null {
+  const doc = new DOMParser().parseFromString(xmlString, "application/xml");
+  const SAML_ASSERTION_NS = "urn:oasis:names:tc:SAML:2.0:assertion";
+  // Use namespace-aware lookup to match <saml:Issuer>, <saml2:Issuer>, etc.
+  const issuerNodes = doc.getElementsByTagNameNS(SAML_ASSERTION_NS, "Issuer");
+  const issuer = issuerNodes[0]?.textContent?.trim() || null;
+  return issuer;
+}
+
 saml.post("/acs", async (c) => {
   const db = c.get("db");
-  const fallbackUrl = c.env.PLATFORM_UI_URL || "http://localhost:5173";
+  const fallbackUrl = c.env.PLATFORM_UI_URL || "";
   const defaultRedirect = `${fallbackUrl}/sso-callback`;
 
   // Determine the redirect URL for errors (updated as we learn more)
@@ -208,11 +220,12 @@ saml.post("/acs", async (c) => {
     } else {
       // ─── IdP-Initiated Flow ───
       // Extract Issuer from the SAML Response to identify the org
-      const issuerMatch = samlResponseXml.match(
-        /<saml[p]?:Issuer[^>]*>([^<]+)<\/saml[p]?:Issuer>/
-      );
-      const responseIssuer = issuerMatch?.[1]?.trim();
-
+      // const issuerMatch = samlResponseXml.match(
+      //   /<saml[p]?:Issuer[^>]*>([^<]+)<\/saml[p]?:Issuer>/
+      // );
+      const responseIssuer = extractIssuerFromSamlResponse(samlResponseXml);
+      
+      console.log("Extracted Issuer from SAML Response:", responseIssuer);
       if (!responseIssuer) {
         return c.redirect(
           `${errorRedirectUrl}?error=${encodeURIComponent("Could not determine identity provider from SAML Response")}`
