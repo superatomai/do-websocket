@@ -95,6 +95,7 @@ export const projects = pgTable(
     slug: varchar("slug", { length: 100 }).notNull(),
     description: text("description"),
     icon: text("icon"),
+    designSystem: jsonb("design_system"),
     createdBy: uuid("created_by").references(() => users.id, {
       onDelete: "set null",
     }),

@@ -22,6 +22,27 @@
       "when": 1771404090849,
       "tag": "0002_hot_tiger_shark",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1771404090850,
+      "tag": "0003_add_super_admin_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1771404090851,
+      "tag": "0004_add_saml_sso",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1771404090852,
+      "tag": "0005_add_design_system",
+      "breakpoints": true
     }
   ]
 }

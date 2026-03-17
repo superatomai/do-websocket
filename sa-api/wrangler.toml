@@ -6,6 +6,13 @@ compatibility_flags = ["nodejs_compat"]
 [observability.logs]
 enabled = true
 
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "sa-assets"
+
+[vars]
+R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
+
 # Environment variables (set via wrangler secret or dashboard)
 # These should be set as secrets, not in this file:
 #   wrangler secret put DATABASE_URL

@@ -175,7 +175,7 @@ auth.get("/me", authMiddleware, async (c) => {
       role: user.role,
     },
     organization: org
-      ? { id: org.id, name: org.name, slug: org.slug }
+      ? { id: org.id, name: org.name, slug: org.slug, icon: org.icon }
       : null,
     apps: permittedApps,
   });

@@ -4,6 +4,13 @@ import { projects, apps } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware, adminOnly, orgScopeGuard } from "../middleware/auth";
 
+const DEFAULT_DESIGN_SYSTEM = {
+  colors: {
+    primary: "#009193",
+    secondary: "#FFFFFF",
+  },
+};
+
 const projectsRouter = new Hono<{
   Bindings: Env;
   Variables: AppVariables;
@@ -24,11 +31,12 @@ projectsRouter.post("/", async (c) => {
   const db = c.get("db");
   const orgId = c.req.param("orgId")!;
   const userId = c.get("userId");
-  const { name, slug, description, icon } = await c.req.json<{
+  const { name, slug, description, icon, designSystem } = await c.req.json<{
     name: string;
     slug: string;
     description?: string;
     icon?: string;
+    designSystem?: Record<string, unknown>;
   }>();
 
   if (!name || !slug) {
@@ -51,7 +59,7 @@ projectsRouter.post("/", async (c) => {
 
   const [project] = await db
     .insert(projects)
-    .values({ orgId, name, slug, description, icon, createdBy: userId })
+    .values({ orgId, name, slug, description, icon, designSystem: designSystem || DEFAULT_DESIGN_SYSTEM, createdBy: userId })
     .returning();
 
   return c.json(project, 201);
@@ -106,7 +114,7 @@ projectsRouter.get("/:projectId", async (c) => {
 projectsRouter.put("/:projectId", async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
-  const body = await c.req.json<{ name?: string; slug?: string; description?: string; icon?: string }>();
+  const body = await c.req.json<{ name?: string; slug?: string; description?: string; icon?: string; designSystem?: Record<string, unknown> }>();
 
   const [updated] = await db
     .update(projects)
