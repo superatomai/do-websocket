@@ -1,0 +1,21 @@
+{
+  "name": "@superatom/websocket",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebSocket broadcaster using Cloudflare Durable Objects",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240208.0",
+    "typescript": "^5.3.0",
+    "wrangler": "^3.22.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

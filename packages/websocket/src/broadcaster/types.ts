@@ -2,12 +2,12 @@ export interface BroadcastMessage {
     id:string
 	type: string;
 	from:{
-		type?:'runtime' | 'data-agent' | 'admin' | 'system';
+		type?:'runtime' | 'data-agent' | 'db-bridge' | 'admin' | 'system';
 		id?: string;
 	};
 	payload : any;
 	to?:{
-		type?:'runtime' | 'data-agent' | 'admin' | 'system';
+		type?:'runtime' | 'data-agent' | 'db-bridge' | 'admin' | 'system';
 		id?: string;
 	};
 }

@@ -142,7 +142,7 @@ export class Broadcaster implements DurableObject {
 			return new Response('Missing type parameter', { status: 400 });
 		}
 
-		if(['runtime','data-agent','admin'].indexOf(type) === -1) {
+		if(['runtime','data-agent','db-bridge','admin'].indexOf(type) === -1) {
 			return new Response('Invalid type parameter', { status: 400 });
 		}
 
