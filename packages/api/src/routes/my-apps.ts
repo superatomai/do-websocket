@@ -1,8 +1,9 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or } from "drizzle-orm";
 import {
   appPermissions,
   apps,
+  organizations,
   projects,
   users,
 } from "../db/schema";
@@ -57,7 +58,17 @@ myApps.get("/", async (c) => {
       )
       .where(and(eq(projects.orgId, orgId!), eq(apps.isActive, true)));
   } else {
-    // Member gets only explicitly permitted apps
+    // Member gets explicitly permitted apps + the org's default app
+    // First, check if org has a default app
+    const [org] = orgId
+      ? await db
+          .select({ defaultAppId: organizations.defaultAppId })
+          .from(organizations)
+          .where(eq(organizations.id, orgId))
+          .limit(1)
+      : [null];
+
+    // Get explicitly permitted apps
     userApps = await db
       .select({
         id: apps.id,
@@ -76,6 +87,31 @@ myApps.get("/", async (c) => {
       .innerJoin(apps, eq(apps.id, appPermissions.appId))
       .innerJoin(projects, eq(projects.id, apps.projectId))
       .where(and(eq(appPermissions.userId, userId), eq(apps.isActive, true)));
+
+    // If org has a default app and it's not already in the list, add it
+    if (org?.defaultAppId && !userApps.find((a) => a.id === org.defaultAppId)) {
+      const [defaultApp] = await db
+        .select({
+          id: apps.id,
+          name: apps.name,
+          type: apps.type,
+          description: apps.description,
+          projectId: apps.projectId,
+          projectName: projects.name,
+          icon: apps.icon,
+          config: apps.config,
+          createdAt: apps.createdAt,
+          updatedAt: apps.updatedAt,
+        })
+        .from(apps)
+        .innerJoin(projects, eq(projects.id, apps.projectId))
+        .where(and(eq(apps.id, org.defaultAppId), eq(apps.isActive, true)))
+        .limit(1);
+
+      if (defaultApp) {
+        userApps.unshift({ ...defaultApp, permission: "view" });
+      }
+    }
   }
 
   return c.json(userApps);
@@ -111,7 +147,7 @@ myApps.get("/:appId", async (c) => {
     return c.json({ ...app.apps, projectName: app.projects.name });
   }
 
-  // Member must have explicit permission
+  // Member must have explicit permission OR app must be the org's default
   const [perm] = await db
     .select()
     .from(appPermissions)
@@ -124,7 +160,24 @@ myApps.get("/:appId", async (c) => {
     .limit(1);
 
   if (!perm) {
-    return c.json({ error: "Forbidden" }, 403);
+    // Check if this is the org's default app
+    const [org] = orgId
+      ? await db
+          .select({ defaultAppId: organizations.defaultAppId })
+          .from(organizations)
+          .where(eq(organizations.id, orgId))
+          .limit(1)
+      : [null];
+
+    if (!org?.defaultAppId || org.defaultAppId !== appId) {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+
+    return c.json({
+      ...app.apps,
+      projectName: app.projects.name,
+      permission: "view",
+    });
   }
 
   return c.json({

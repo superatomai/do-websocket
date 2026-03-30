@@ -148,7 +148,7 @@ auth.get("/me", authMiddleware, async (c) => {
       )
       .where(and(eq(projects.orgId, user.orgId!), eq(apps.isActive, true)));
   } else {
-    // Member sees only explicitly permitted apps
+    // Member sees explicitly permitted apps + org's default app
     permittedApps = await db
       .select({
         id: apps.id,
@@ -164,6 +164,26 @@ auth.get("/me", authMiddleware, async (c) => {
       .where(
         and(eq(appPermissions.userId, userId), eq(apps.isActive, true))
       );
+
+    // Include org's default app if not already in the list
+    if (org?.defaultAppId && !permittedApps.find((a) => a.id === org.defaultAppId)) {
+      const [defaultApp] = await db
+        .select({
+          id: apps.id,
+          name: apps.name,
+          type: apps.type,
+          projectId: apps.projectId,
+          projectName: projects.name,
+        })
+        .from(apps)
+        .innerJoin(projects, eq(projects.id, apps.projectId))
+        .where(and(eq(apps.id, org.defaultAppId), eq(apps.isActive, true)))
+        .limit(1);
+
+      if (defaultApp) {
+        permittedApps.unshift({ ...defaultApp, permission: "view" });
+      }
+    }
   }
 
   return c.json({
@@ -175,7 +195,7 @@ auth.get("/me", authMiddleware, async (c) => {
       role: user.role,
     },
     organization: org
-      ? { id: org.id, name: org.name, slug: org.slug, icon: org.icon }
+      ? { id: org.id, name: org.name, slug: org.slug, icon: org.icon, defaultAppId: org.defaultAppId }
       : null,
     apps: permittedApps,
   });

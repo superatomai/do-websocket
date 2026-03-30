@@ -144,7 +144,7 @@ orgs.get("/:orgId", authMiddleware, adminOnly, orgScopeGuard, async (c) => {
 orgs.put("/:orgId", authMiddleware, adminOnly, orgScopeGuard, async (c) => {
   const db = c.get("db");
   const orgId = c.req.param("orgId");
-  const body = await c.req.json<{ name?: string; slug?: string; icon?: string }>();
+  const body = await c.req.json<{ name?: string; slug?: string; icon?: string; defaultAppId?: string | null }>();
 
   const [updated] = await db
     .update(organizations)
