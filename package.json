@@ -3,9 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "description": "SuperAtom Cloudflare Workers monorepo",
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
     "dev:websocket": "npm run dev -w packages/websocket",
     "dev:api": "npm run dev -w packages/api",

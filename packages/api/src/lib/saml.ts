@@ -1,4 +1,4 @@
-import { SignedXml } from "xml-crypto";
+import { ExclusiveCanonicalization } from "xml-crypto";
 import { DOMParser } from "@xmldom/xmldom";
 
 // ─── Constants ──────────────────────────────────────────
@@ -175,13 +175,13 @@ export function buildSpMetadata(acsUrl: string, spEntityId: string): string {
  * Validate and extract identity from a SAML Response.
  * Performs all security checks: status, destination, signature, conditions, audience.
  */
-export function validateSamlResponse(params: {
+export async function validateSamlResponse(params: {
   samlResponseXml: string;
   certificates: string[];
   expectedAcsUrl: string;
   expectedAudience: string;
   expectedRequestId?: string; // Only for SP-initiated (InResponseTo check)
-}): SamlValidationResult {
+}): Promise<SamlValidationResult> {
   const { samlResponseXml, certificates, expectedAcsUrl, expectedAudience, expectedRequestId } =
     params;
 
@@ -221,7 +221,7 @@ export function validateSamlResponse(params: {
   const issuer = getElementText(responseEl, SAML_ASSERTION_NS, "Issuer") || "";
 
   // --- Step 7: Validate XML Signature ---
-  const signedElement = verifySamlSignature(samlResponseXml, doc, certificates);
+  const signedElement = await verifySamlSignature(samlResponseXml, doc, certificates);
 
   // --- Get the assertion (only from the signed element) ---
   let assertion: Element;
@@ -283,38 +283,290 @@ function checkStatusCode(responseEl: Element): void {
   }
 }
 
+// ─── Signature Algorithm Mappings ──────────────────────
+
+const DIGEST_ALGORITHM_MAP: Record<string, string> = {
+  "http://www.w3.org/2000/09/xmldsig#sha1": "SHA-1",
+  "http://www.w3.org/2001/04/xmlenc#sha256": "SHA-256",
+  "http://www.w3.org/2001/04/xmlenc#sha512": "SHA-512",
+};
+
+const SIGNATURE_ALGORITHM_MAP: Record<string, string> = {
+  "http://www.w3.org/2000/09/xmldsig#rsa-sha1": "SHA-1",
+  "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256": "SHA-256",
+  "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512": "SHA-512",
+};
+
 /**
- * Verify the XML signature on the SAML Response or Assertion.
+ * Compute a digest using Web Crypto API.
+ */
+async function webCryptoDigest(algorithm: string, data: string): Promise<string> {
+  const encoded = new TextEncoder().encode(data);
+  const hashBuffer = await crypto.subtle.digest(algorithm, encoded);
+  return btoa(String.fromCharCode(...new Uint8Array(hashBuffer)));
+}
+
+/**
+ * Extract the SubjectPublicKeyInfo (SPKI) from a DER-encoded X.509 certificate.
+ * This parses just enough ASN.1 to pull out the public key for Web Crypto import.
+ */
+function extractSpkiFromCert(certDer: Uint8Array): Uint8Array {
+  // X.509 Certificate structure (simplified ASN.1):
+  //   Certificate ::= SEQUENCE {
+  //     tbsCertificate TBSCertificate ::= SEQUENCE {
+  //       version [0] EXPLICIT ...,
+  //       serialNumber ...,
+  //       signature AlgorithmIdentifier,
+  //       issuer ...,
+  //       validity ...,
+  //       subject ...,
+  //       subjectPublicKeyInfo SubjectPublicKeyInfo  <-- this is what we need
+  //       ...
+  //     }
+  //   }
+  let offset = 0;
+
+  function readTag(): { tag: number; constructed: boolean; length: number } {
+    const tag = certDer[offset++];
+    const constructed = (tag & 0x20) !== 0;
+    let length = certDer[offset++];
+    if (length & 0x80) {
+      const numBytes = length & 0x7f;
+      length = 0;
+      for (let i = 0; i < numBytes; i++) {
+        length = (length << 8) | certDer[offset++];
+      }
+    }
+    return { tag: tag & 0x1f, constructed, length };
+  }
+
+  function skipField(): void {
+    const { length } = readTag();
+    offset += length;
+  }
+
+  // Outer SEQUENCE (Certificate)
+  readTag();
+  // TBSCertificate SEQUENCE
+  readTag();
+
+  // version [0] EXPLICIT — optional, context-specific tag 0
+  if ((certDer[offset] & 0xa0) === 0xa0) {
+    skipField();
+  }
+
+  // serialNumber
+  skipField();
+  // signature (AlgorithmIdentifier)
+  skipField();
+  // issuer
+  skipField();
+  // validity
+  skipField();
+  // subject
+  skipField();
+
+  // subjectPublicKeyInfo — capture this entire SEQUENCE
+  const spkiStart = offset;
+  skipField();
+  return certDer.slice(spkiStart, offset);
+}
+
+/**
+ * Import a PEM-encoded X.509 certificate as a CryptoKey for signature verification.
+ */
+async function importX509Key(pemCert: string, hashAlgo: string): Promise<CryptoKey> {
+  const b64 = pemCert
+    .replace(/-----BEGIN CERTIFICATE-----/g, "")
+    .replace(/-----END CERTIFICATE-----/g, "")
+    .replace(/\s+/g, "");
+  const binary = atob(b64);
+  const certDer = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    certDer[i] = binary.charCodeAt(i);
+  }
+
+  const spki = extractSpkiFromCert(certDer);
+
+  return crypto.subtle.importKey(
+    "spki",
+    spki.buffer as ArrayBuffer,
+    { name: "RSASSA-PKCS1-v1_5", hash: hashAlgo },
+    false,
+    ["verify"]
+  );
+}
+
+/**
+ * Collect xmlns namespace declarations from all ancestor elements of a node.
+ */
+function collectAncestorNamespaces(
+  node: Node
+): Array<{ prefix: string; namespaceURI: string }> {
+  const nsArray: Array<{ prefix: string; namespaceURI: string }> = [];
+  let current = node.parentNode as Element | null;
+  while (current && current.nodeType === 1 /* ELEMENT_NODE */) {
+    if (current.attributes) {
+      for (let i = 0; i < current.attributes.length; i++) {
+        const attr = current.attributes[i];
+        if (attr.nodeName && /^xmlns:?/.test(attr.nodeName)) {
+          const prefix = attr.nodeName.replace(/^xmlns:?/, "");
+          // Only add if not already present (closest ancestor wins)
+          if (!nsArray.some((ns) => ns.prefix === prefix)) {
+            nsArray.push({ prefix, namespaceURI: attr.nodeValue || "" });
+          }
+        }
+      }
+    }
+    current = current.parentNode as Element | null;
+  }
+  return nsArray;
+}
+
+/**
+ * Canonicalize an XML element using Exclusive C14N,
+ * automatically including ancestor namespace declarations.
+ */
+function canonicalizeElement(elem: Element): string {
+  const ancestorNamespaces = collectAncestorNamespaces(elem);
+  const c14n = new ExclusiveCanonicalization();
+  return c14n.process(elem, { ancestorNamespaces }).toString();
+}
+
+/**
+ * Remove the Signature element from a cloned node (enveloped signature transform).
+ */
+function removeSignatureFromElement(elem: Element): Element {
+  const cloned = elem.cloneNode(true) as Element;
+  const sigs = cloned.getElementsByTagNameNS(XMLDSIG_NS, "Signature");
+  for (let i = sigs.length - 1; i >= 0; i--) {
+    sigs[i].parentNode?.removeChild(sigs[i]);
+  }
+  return cloned;
+}
+
+/**
+ * Verify the XML signature on the SAML Response or Assertion using Web Crypto API.
  * Returns which element was signed.
  */
-function verifySamlSignature(
-  xmlString: string,
+async function verifySamlSignature(
+  _xmlString: string,
   doc: Document,
   certificates: string[]
-): "Response" | "Assertion" {
+): Promise<"Response" | "Assertion"> {
   const signatures = doc.getElementsByTagNameNS(XMLDSIG_NS, "Signature");
 
   if (signatures.length === 0) {
     throw new SamlError("SAML Response is not signed");
   }
 
-  // Determine if signature is on Response or Assertion
-  const sigParent = signatures[0].parentNode as Element | null;
+  const signatureEl = signatures[0] as Element;
+  const sigParent = signatureEl.parentNode as Element | null;
   const signedElement: "Response" | "Assertion" =
     sigParent?.localName === "Assertion" ? "Assertion" : "Response";
+
+  // Extract SignedInfo
+  const signedInfoEls = signatureEl.getElementsByTagNameNS(XMLDSIG_NS, "SignedInfo");
+  if (signedInfoEls.length === 0) {
+    throw new SamlError("No SignedInfo element found in Signature");
+  }
+  const signedInfoEl = signedInfoEls[0] as Element;
+
+  // Get signature algorithm
+  const sigMethodEls = signedInfoEl.getElementsByTagNameNS(XMLDSIG_NS, "SignatureMethod");
+  if (sigMethodEls.length === 0) {
+    throw new SamlError("No SignatureMethod found in SignedInfo");
+  }
+  const sigAlgoUri = sigMethodEls[0].getAttribute("Algorithm") || "";
+  const hashAlgo = SIGNATURE_ALGORITHM_MAP[sigAlgoUri];
+  if (!hashAlgo) {
+    throw new SamlError(`Unsupported signature algorithm: ${sigAlgoUri}`);
+  }
+
+  // Get SignatureValue
+  const sigValueEls = signatureEl.getElementsByTagNameNS(XMLDSIG_NS, "SignatureValue");
+  if (sigValueEls.length === 0) {
+    throw new SamlError("No SignatureValue found");
+  }
+  const sigValueB64 = (sigValueEls[0].textContent || "").replace(/\s+/g, "");
+  const sigBytes = Uint8Array.from(atob(sigValueB64), (c) => c.charCodeAt(0));
+
+  // Validate References (digest checks)
+  const referenceEls = signedInfoEl.getElementsByTagNameNS(XMLDSIG_NS, "Reference");
+  for (let i = 0; i < referenceEls.length; i++) {
+    const ref = referenceEls[i] as Element;
+    const uri = ref.getAttribute("URI") || "";
+
+    // Find the referenced element
+    let referencedElement: Element;
+    if (uri === "") {
+      referencedElement = doc.documentElement as Element;
+    } else if (uri.startsWith("#")) {
+      const id = uri.substring(1);
+      referencedElement = findElementById(doc, id);
+      if (!referencedElement) {
+        throw new SamlError(`Referenced element not found: ${uri}`);
+      }
+    } else {
+      throw new SamlError(`Unsupported Reference URI: ${uri}`);
+    }
+
+    // Apply transforms
+    const transformEls = ref.getElementsByTagNameNS(XMLDSIG_NS, "Transform");
+    let transformedElement = referencedElement;
+    for (let t = 0; t < transformEls.length; t++) {
+      const transformAlgo = transformEls[t].getAttribute("Algorithm") || "";
+      if (transformAlgo === "http://www.w3.org/2000/09/xmldsig#enveloped-signature") {
+        transformedElement = removeSignatureFromElement(transformedElement);
+      }
+      // Exclusive C14N is applied during canonicalization below
+    }
+
+    // Canonicalize and compute digest
+    const canonXml = canonicalizeElement(transformedElement);
+
+    // Get expected digest
+    const digestMethodEls = ref.getElementsByTagNameNS(XMLDSIG_NS, "DigestMethod");
+    const digestAlgoUri = digestMethodEls[0]?.getAttribute("Algorithm") || "";
+    const digestHashAlgo = DIGEST_ALGORITHM_MAP[digestAlgoUri];
+    if (!digestHashAlgo) {
+      throw new SamlError(`Unsupported digest algorithm: ${digestAlgoUri}`);
+    }
+
+    const digestValueEls = ref.getElementsByTagNameNS(XMLDSIG_NS, "DigestValue");
+    const expectedDigest = (digestValueEls[0]?.textContent || "").replace(/\s+/g, "");
+
+    const computedDigest = await webCryptoDigest(digestHashAlgo, canonXml);
+
+    if (computedDigest !== expectedDigest) {
+      console.error(
+        `[SAML] Digest mismatch for ${uri}. Expected: ${expectedDigest}, Got: ${computedDigest}. DigestAlgo: ${digestAlgoUri}. CanonXml length: ${canonXml.length}`
+      );
+      console.error(`[SAML] CanonXml (first 500 chars): ${canonXml.substring(0, 500)}`);
+      throw new SamlError("SAML signature verification failed");
+    }
+  }
+
+  // Canonicalize SignedInfo for signature verification
+  const canonSignedInfo = canonicalizeElement(signedInfoEl);
 
   // Try each stored certificate (supports key rotation)
   const errors: string[] = [];
   for (const cert of certificates) {
     try {
-      const sig = new SignedXml();
-      sig.publicCert = certToPem(cert);
-      sig.loadSignature(signatures[0]);
-
-      if (sig.checkSignature(xmlString)) {
+      const pem = certToPem(cert);
+      const cryptoKey = await importX509Key(pem, hashAlgo);
+      const dataBytes = new TextEncoder().encode(canonSignedInfo);
+      const valid = await crypto.subtle.verify(
+        "RSASSA-PKCS1-v1_5",
+        cryptoKey,
+        sigBytes,
+        dataBytes
+      );
+      if (valid) {
         return signedElement;
       }
-      errors.push("Signature digest mismatch");
+      errors.push("Signature value mismatch");
     } catch (err: any) {
       errors.push(err.message || "Unknown error");
     }
@@ -322,6 +574,24 @@ function verifySamlSignature(
 
   console.error(`[SAML] Signature verification failed. Errors: ${errors.join("; ")}`);
   throw new SamlError("SAML signature verification failed");
+}
+
+/**
+ * Find an element by its ID attribute (checks Id, ID, id).
+ */
+function findElementById(doc: Document, id: string): Element {
+  const all = doc.getElementsByTagName("*");
+  for (let i = 0; i < all.length; i++) {
+    const el = all[i] as Element;
+    if (
+      el.getAttribute("ID") === id ||
+      el.getAttribute("Id") === id ||
+      el.getAttribute("id") === id
+    ) {
+      return el;
+    }
+  }
+  return null as any;
 }
 
 /**

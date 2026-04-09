@@ -276,7 +276,7 @@ saml.post("/acs", async (c) => {
     const certificates = config.samlIdpCertificates as string[];
 
     // Validate the SAML Response (signature, conditions, audience, identity)
-    const { identity } = validateSamlResponse({
+    const { identity } = await validateSamlResponse({
       samlResponseXml,
       certificates,
       expectedAcsUrl: acsUrl,
