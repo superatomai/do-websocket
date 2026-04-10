@@ -47,8 +47,8 @@
     {
       "idx": 6,
       "version": "7",
-      "when": 1775816415621,
-      "tag": "0006_elite_catseye",
+      "when": 1771404090853,
+      "tag": "0006_add_default_app",
       "breakpoints": true
     }
   ]

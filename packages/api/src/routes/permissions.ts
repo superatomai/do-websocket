@@ -9,8 +9,6 @@ const permissionsRouter = new Hono<{
   Variables: AppVariables;
 }>();
 
-permissionsRouter.use("*", authMiddleware, adminOnly);
-
 type ProjectMember = {
   userId: string;
   permission: "view" | "edit";
@@ -22,7 +20,7 @@ type ProjectMember = {
  * POST /projects/:projectId/members
  * Add a user to a project
  */
-permissionsRouter.post("/projects/:projectId/members", async (c) => {
+permissionsRouter.post("/projects/:projectId/members", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
   const grantedBy = c.get("userId");
@@ -86,7 +84,7 @@ permissionsRouter.post("/projects/:projectId/members", async (c) => {
  * GET /projects/:projectId/members
  * List all members of a project
  */
-permissionsRouter.get("/projects/:projectId/members", async (c) => {
+permissionsRouter.get("/projects/:projectId/members", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
 
@@ -137,7 +135,7 @@ permissionsRouter.get("/projects/:projectId/members", async (c) => {
  * PUT /projects/:projectId/members/:userId
  * Update a member's permission level
  */
-permissionsRouter.put("/projects/:projectId/members/:userId", async (c) => {
+permissionsRouter.put("/projects/:projectId/members/:userId", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
   const userId = c.req.param("userId");
@@ -181,7 +179,7 @@ permissionsRouter.put("/projects/:projectId/members/:userId", async (c) => {
  * DELETE /projects/:projectId/members/:userId
  * Remove a user from a project
  */
-permissionsRouter.delete("/projects/:projectId/members/:userId", async (c) => {
+permissionsRouter.delete("/projects/:projectId/members/:userId", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
   const userId = c.req.param("userId");
