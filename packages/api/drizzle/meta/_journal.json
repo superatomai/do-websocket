@@ -43,6 +43,13 @@
       "when": 1771404090852,
       "tag": "0005_add_design_system",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1775816415621,
+      "tag": "0006_elite_catseye",
+      "breakpoints": true
     }
   ]
 }

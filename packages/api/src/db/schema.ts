@@ -23,6 +23,12 @@ export const appTypeEnum = pgEnum("app_type", [
   "chat_agent",
 ]);
 
+export const projectPermissionEnum = pgEnum("project_permission", [
+  "view",
+  "edit",
+]);
+
+// Kept for backward compatibility — no longer used by routes
 export const permissionEnum = pgEnum("permission_level", [
   "view",
   "edit",
@@ -43,7 +49,7 @@ export const organizations = pgTable("organizations", {
   name: varchar("name", { length: 255 }).notNull(),
   slug: varchar("slug", { length: 100 }).unique().notNull(),
   icon: text("icon"),
-  defaultAppId: uuid("default_app_id"),
+  defaultAppId: uuid("default_app_id"), // Kept for backward compatibility — no longer used by routes
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -78,7 +84,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
     fields: [users.orgId],
     references: [organizations.id],
   }),
-  appPermissions: many(appPermissions),
+  appPermissions: many(appPermissions), // Kept for backward compatibility
   createdProjects: many(projects),
   createdApps: many(apps),
 }));
@@ -97,6 +103,14 @@ export const projects = pgTable(
     description: text("description"),
     icon: text("icon"),
     designSystem: jsonb("design_system"),
+    members: jsonb("members").default([]).$type<
+      Array<{
+        userId: string;
+        permission: "view" | "edit";
+        grantedBy: string;
+        grantedAt: string;
+      }>
+    >(),
     createdBy: uuid("created_by").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -147,10 +161,10 @@ export const appsRelations = relations(apps, ({ one, many }) => ({
     fields: [apps.createdBy],
     references: [users.id],
   }),
-  permissions: many(appPermissions),
+  permissions: many(appPermissions), // Kept for backward compatibility
 }));
 
-// ─── App Permissions ─────────────────────────────────────
+// ─── App Permissions (kept for backward compatibility — no longer used by routes) ───
 
 export const appPermissions = pgTable(
   "app_permissions",

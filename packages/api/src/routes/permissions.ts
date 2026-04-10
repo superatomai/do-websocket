@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
-import { appPermissions, users, apps } from "../db/schema";
+import { eq } from "drizzle-orm";
+import { projects, users } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware, adminOnly } from "../middleware/auth";
 
@@ -11,132 +11,204 @@ const permissionsRouter = new Hono<{
 
 permissionsRouter.use("*", authMiddleware, adminOnly);
 
+type ProjectMember = {
+  userId: string;
+  permission: "view" | "edit";
+  grantedBy: string;
+  grantedAt: string;
+};
+
 /**
- * POST /apps/:appId/permissions
- * Grant user access to app
+ * POST /projects/:projectId/members
+ * Add a user to a project
  */
-permissionsRouter.post("/:appId/permissions", async (c) => {
+permissionsRouter.post("/projects/:projectId/members", async (c) => {
   const db = c.get("db");
-  const appId = c.req.param("appId");
+  const projectId = c.req.param("projectId");
   const grantedBy = c.get("userId");
   const { userId, permission } = await c.req.json<{
     userId: string;
-    permission: "view" | "edit" | "admin";
+    permission?: "view" | "edit";
   }>();
 
-  if (!userId || !permission) {
-    return c.json({ error: "userId and permission are required" }, 400);
+  if (!userId) {
+    return c.json({ error: "userId is required" }, 400);
   }
 
-  // Check if permission already exists
-  const [existing] = await db
-    .select()
-    .from(appPermissions)
-    .where(
-      and(
-        eq(appPermissions.userId, userId),
-        eq(appPermissions.appId, appId)
-      )
-    )
+  // Verify user exists
+  const [user] = await db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, userId))
     .limit(1);
 
-  if (existing) {
+  if (!user) {
+    return c.json({ error: "User not found" }, 404);
+  }
+
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+
+  if (!project) {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  const members: ProjectMember[] = (project.members as ProjectMember[]) || [];
+
+  // Check if user already a member
+  if (members.some((m) => m.userId === userId)) {
     return c.json(
-      { error: "User already has permission for this app. Use PUT to update." },
+      { error: "User is already a member of this project. Use PUT to update." },
       409
     );
   }
 
-  const [perm] = await db
-    .insert(appPermissions)
-    .values({ userId, appId, permission, grantedBy })
+  const newMember: ProjectMember = {
+    userId,
+    permission: permission || "view",
+    grantedBy,
+    grantedAt: new Date().toISOString(),
+  };
+
+  const [updated] = await db
+    .update(projects)
+    .set({ members: [...members, newMember], updatedAt: new Date() })
+    .where(eq(projects.id, projectId))
     .returning();
 
-  return c.json(perm, 201);
+  return c.json(newMember, 201);
 });
 
 /**
- * GET /apps/:appId/permissions
- * List who has access to this app
+ * GET /projects/:projectId/members
+ * List all members of a project
  */
-permissionsRouter.get("/:appId/permissions", async (c) => {
+permissionsRouter.get("/projects/:projectId/members", async (c) => {
   const db = c.get("db");
-  const appId = c.req.param("appId");
+  const projectId = c.req.param("projectId");
 
-  const perms = await db
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+
+  if (!project) {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  const members: ProjectMember[] = (project.members as ProjectMember[]) || [];
+
+  if (members.length === 0) {
+    return c.json([]);
+  }
+
+  // Enrich with user details
+  const userIds = members.map((m) => m.userId);
+  const memberUsers = await db
     .select({
-      id: appPermissions.id,
-      userId: appPermissions.userId,
-      userName: users.name,
-      userEmail: users.email,
-      permission: appPermissions.permission,
-      createdAt: appPermissions.createdAt,
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+      isActive: users.isActive,
     })
-    .from(appPermissions)
-    .innerJoin(users, eq(users.id, appPermissions.userId))
-    .where(eq(appPermissions.appId, appId));
+    .from(users);
 
-  return c.json(perms);
+  const userMap = new Map(memberUsers.map((u) => [u.id, u]));
+
+  const enriched = members
+    .map((m) => ({
+      ...m,
+      userName: userMap.get(m.userId)?.name || null,
+      userEmail: userMap.get(m.userId)?.email || null,
+      userRole: userMap.get(m.userId)?.role || null,
+      isActive: userMap.get(m.userId)?.isActive ?? null,
+    }))
+    .filter((m) => userMap.has(m.userId));
+
+  return c.json(enriched);
 });
 
 /**
- * PUT /apps/:appId/permissions/:userId
- * Update user's permission level
+ * PUT /projects/:projectId/members/:userId
+ * Update a member's permission level
  */
-permissionsRouter.put("/:appId/permissions/:userId", async (c) => {
+permissionsRouter.put("/projects/:projectId/members/:userId", async (c) => {
   const db = c.get("db");
-  const appId = c.req.param("appId");
+  const projectId = c.req.param("projectId");
   const userId = c.req.param("userId");
   const { permission } = await c.req.json<{
-    permission: "view" | "edit" | "admin";
+    permission: "view" | "edit";
   }>();
 
   if (!permission) {
     return c.json({ error: "permission is required" }, 400);
   }
 
-  const [updated] = await db
-    .update(appPermissions)
-    .set({ permission })
-    .where(
-      and(
-        eq(appPermissions.userId, userId),
-        eq(appPermissions.appId, appId)
-      )
-    )
-    .returning();
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
 
-  if (!updated) {
-    return c.json({ error: "Permission not found" }, 404);
+  if (!project) {
+    return c.json({ error: "Project not found" }, 404);
   }
 
-  return c.json(updated);
+  const members: ProjectMember[] = (project.members as ProjectMember[]) || [];
+  const idx = members.findIndex((m) => m.userId === userId);
+
+  if (idx === -1) {
+    return c.json({ error: "User is not a member of this project" }, 404);
+  }
+
+  members[idx] = { ...members[idx], permission };
+
+  const [updated] = await db
+    .update(projects)
+    .set({ members, updatedAt: new Date() })
+    .where(eq(projects.id, projectId))
+    .returning();
+
+  return c.json(members[idx]);
 });
 
 /**
- * DELETE /apps/:appId/permissions/:userId
- * Revoke user's access to app
+ * DELETE /projects/:projectId/members/:userId
+ * Remove a user from a project
  */
-permissionsRouter.delete("/:appId/permissions/:userId", async (c) => {
+permissionsRouter.delete("/projects/:projectId/members/:userId", async (c) => {
   const db = c.get("db");
-  const appId = c.req.param("appId");
+  const projectId = c.req.param("projectId");
   const userId = c.req.param("userId");
 
-  const [deleted] = await db
-    .delete(appPermissions)
-    .where(
-      and(
-        eq(appPermissions.userId, userId),
-        eq(appPermissions.appId, appId)
-      )
-    )
-    .returning({ id: appPermissions.id });
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
 
-  if (!deleted) {
-    return c.json({ error: "Permission not found" }, 404);
+  if (!project) {
+    return c.json({ error: "Project not found" }, 404);
   }
 
-  return c.json({ message: "Permission revoked" });
+  const members: ProjectMember[] = (project.members as ProjectMember[]) || [];
+  const filtered = members.filter((m) => m.userId !== userId);
+
+  if (filtered.length === members.length) {
+    return c.json({ error: "User is not a member of this project" }, 404);
+  }
+
+  await db
+    .update(projects)
+    .set({ members: filtered, updatedAt: new Date() })
+    .where(eq(projects.id, projectId));
+
+  return c.json({ message: "Member removed from project" });
 });
 
 export default permissionsRouter;

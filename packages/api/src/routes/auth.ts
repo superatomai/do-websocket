@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
 import { SignJWT } from "jose";
-import { users, organizations, appPermissions, apps, projects } from "../db/schema";
+import { users, organizations, projects } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware } from "../middleware/auth";
 
@@ -101,7 +101,7 @@ auth.get("/me", authMiddleware, async (c) => {
     return c.json({ error: "User not found" }, 404);
   }
 
-  // Super admin: no org, no app list
+  // Super admin: no org, no projects
   if (user.role === "super_admin") {
     return c.json({
       user: {
@@ -112,7 +112,7 @@ auth.get("/me", authMiddleware, async (c) => {
         role: user.role,
       },
       organization: null,
-      apps: [],
+      projects: [],
     });
   }
 
@@ -124,66 +124,31 @@ auth.get("/me", authMiddleware, async (c) => {
         .limit(1)
     : [null];
 
-  // Get permitted apps
-  let permittedApps;
+  // Get accessible projects
+  type ProjectMember = { userId: string; permission: string; grantedBy: string; grantedAt: string };
+  let accessibleProjects;
+
+  const orgProjects = await db
+    .select({
+      id: projects.id,
+      name: projects.name,
+      slug: projects.slug,
+      description: projects.description,
+      icon: projects.icon,
+      members: projects.members,
+    })
+    .from(projects)
+    .where(eq(projects.orgId, user.orgId!));
+
   if (user.role === "org_admin") {
-    // Admin sees all active apps in the org
-    permittedApps = await db
-      .select({
-        id: apps.id,
-        name: apps.name,
-        type: apps.type,
-        projectId: apps.projectId,
-        projectName: projects.name,
-        permission: appPermissions.permission,
-      })
-      .from(apps)
-      .innerJoin(projects, eq(projects.id, apps.projectId))
-      .leftJoin(
-        appPermissions,
-        and(
-          eq(appPermissions.appId, apps.id),
-          eq(appPermissions.userId, userId)
-        )
-      )
-      .where(and(eq(projects.orgId, user.orgId!), eq(apps.isActive, true)));
+    // Admin sees all projects in the org
+    accessibleProjects = orgProjects;
   } else {
-    // Member sees explicitly permitted apps + org's default app
-    permittedApps = await db
-      .select({
-        id: apps.id,
-        name: apps.name,
-        type: apps.type,
-        projectId: apps.projectId,
-        projectName: projects.name,
-        permission: appPermissions.permission,
-      })
-      .from(appPermissions)
-      .innerJoin(apps, eq(apps.id, appPermissions.appId))
-      .innerJoin(projects, eq(projects.id, apps.projectId))
-      .where(
-        and(eq(appPermissions.userId, userId), eq(apps.isActive, true))
-      );
-
-    // Include org's default app if not already in the list
-    if (org?.defaultAppId && !permittedApps.find((a) => a.id === org.defaultAppId)) {
-      const [defaultApp] = await db
-        .select({
-          id: apps.id,
-          name: apps.name,
-          type: apps.type,
-          projectId: apps.projectId,
-          projectName: projects.name,
-        })
-        .from(apps)
-        .innerJoin(projects, eq(projects.id, apps.projectId))
-        .where(and(eq(apps.id, org.defaultAppId), eq(apps.isActive, true)))
-        .limit(1);
-
-      if (defaultApp) {
-        permittedApps.unshift({ ...defaultApp, permission: "view" });
-      }
-    }
+    // Member sees only projects they're assigned to
+    accessibleProjects = orgProjects.filter((p) => {
+      const members = (p.members as ProjectMember[]) || [];
+      return members.some((m) => m.userId === userId);
+    });
   }
 
   return c.json({
@@ -195,9 +160,9 @@ auth.get("/me", authMiddleware, async (c) => {
       role: user.role,
     },
     organization: org
-      ? { id: org.id, name: org.name, slug: org.slug, icon: org.icon, defaultAppId: org.defaultAppId }
+      ? { id: org.id, name: org.name, slug: org.slug, icon: org.icon }
       : null,
-    apps: permittedApps,
+    projects: accessibleProjects,
   });
 });
 

@@ -67,27 +67,41 @@ projectsRouter.post("/", async (c) => {
 
 /**
  * GET /orgs/:orgId/projects
- * List all projects in org
+ * List projects in org. Admins see all, members see only assigned projects.
  */
 projectsRouter.get("/", async (c) => {
   const db = c.get("db");
   const orgId = c.req.param("orgId")!;
+  const userId = c.get("userId");
+  const userRole = c.get("userRole");
 
   const orgProjects = await db
     .select()
     .from(projects)
     .where(eq(projects.orgId, orgId));
 
+  // Members only see projects they're assigned to
+  if (userRole === "member") {
+    type ProjectMember = { userId: string; permission: string; grantedBy: string; grantedAt: string };
+    const filtered = orgProjects.filter((p) => {
+      const members = (p.members as ProjectMember[]) || [];
+      return members.some((m) => m.userId === userId);
+    });
+    return c.json(filtered);
+  }
+
   return c.json(orgProjects);
 });
 
 /**
  * GET /orgs/:orgId/projects/:projectId
- * Get project details + its apps
+ * Get project details + its apps. Members must be assigned to the project.
  */
 projectsRouter.get("/:projectId", async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
+  const userId = c.get("userId");
+  const userRole = c.get("userRole");
 
   const [project] = await db
     .select()
@@ -97,6 +111,15 @@ projectsRouter.get("/:projectId", async (c) => {
 
   if (!project) {
     return c.json({ error: "Project not found" }, 404);
+  }
+
+  // Members must be assigned to this project
+  if (userRole === "member") {
+    type ProjectMember = { userId: string; permission: string; grantedBy: string; grantedAt: string };
+    const members = (project.members as ProjectMember[]) || [];
+    if (!members.some((m) => m.userId === userId)) {
+      return c.json({ error: "Forbidden" }, 403);
+    }
   }
 
   const projectApps = await db

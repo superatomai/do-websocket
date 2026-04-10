@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
-import { users, appPermissions, apps } from "../db/schema";
+import { users, projects } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware, adminOnly, orgScopeGuard } from "../middleware/auth";
 
@@ -112,10 +112,11 @@ usersRouter.get("/", async (c) => {
 
 /**
  * GET /orgs/:orgId/users/:userId
- * Get user details + their app permissions
+ * Get user details + their project memberships
  */
 usersRouter.get("/:userId", async (c) => {
   const db = c.get("db");
+  const orgId = c.req.param("orgId")!;
   const userId = c.req.param("userId");
 
   const [user] = await db
@@ -136,20 +137,31 @@ usersRouter.get("/:userId", async (c) => {
     return c.json({ error: "User not found" }, 404);
   }
 
-  // Get user's app permissions
-  const permissions = await db
-    .select({
-      appId: appPermissions.appId,
-      appName: apps.name,
-      appType: apps.type,
-      permission: appPermissions.permission,
-      createdAt: appPermissions.createdAt,
-    })
-    .from(appPermissions)
-    .innerJoin(apps, eq(apps.id, appPermissions.appId))
-    .where(eq(appPermissions.userId, userId));
+  // Get projects this user is a member of
+  type ProjectMember = { userId: string; permission: string; grantedBy: string; grantedAt: string };
+  const orgProjects = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.orgId, orgId));
 
-  return c.json({ ...user, permissions });
+  const userProjects = orgProjects
+    .filter((p) => {
+      const members = (p.members as ProjectMember[]) || [];
+      return members.some((m) => m.userId === userId);
+    })
+    .map((p) => {
+      const members = (p.members as ProjectMember[]) || [];
+      const membership = members.find((m) => m.userId === userId)!;
+      return {
+        projectId: p.id,
+        projectName: p.name,
+        projectSlug: p.slug,
+        permission: membership.permission,
+        grantedAt: membership.grantedAt,
+      };
+    });
+
+  return c.json({ ...user, projects: userProjects });
 });
 
 /**
@@ -194,10 +206,11 @@ usersRouter.put("/:userId", async (c) => {
 
 /**
  * DELETE /orgs/:orgId/users/:userId
- * Deactivate user (sets isActive = false, revokes all app access)
+ * Deactivate user (sets isActive = false, removes from all project memberships)
  */
 usersRouter.delete("/:userId", async (c) => {
   const db = c.get("db");
+  const orgId = c.req.param("orgId")!;
   const userId = c.req.param("userId");
 
   // Deactivate user
@@ -211,12 +224,25 @@ usersRouter.delete("/:userId", async (c) => {
     return c.json({ error: "User not found" }, 404);
   }
 
-  // Revoke all app permissions
-  await db
-    .delete(appPermissions)
-    .where(eq(appPermissions.userId, userId));
+  // Remove user from all project memberships in this org
+  type PM = { userId: string; permission: "view" | "edit"; grantedBy: string; grantedAt: string };
+  const orgProjects = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.orgId, orgId));
 
-  return c.json({ message: "User deactivated and all permissions revoked" });
+  for (const project of orgProjects) {
+    const members = (project.members as PM[]) || [];
+    const filtered = members.filter((m) => m.userId !== userId);
+    if (filtered.length !== members.length) {
+      await db
+        .update(projects)
+        .set({ members: filtered, updatedAt: new Date() })
+        .where(eq(projects.id, project.id));
+    }
+  }
+
+  return c.json({ message: "User deactivated and removed from all projects" });
 });
 
 export default usersRouter;

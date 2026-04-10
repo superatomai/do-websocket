@@ -1,12 +1,6 @@
 import { Hono } from "hono";
-import { eq, and, or } from "drizzle-orm";
-import {
-  appPermissions,
-  apps,
-  organizations,
-  projects,
-  users,
-} from "../db/schema";
+import { eq, and, sql } from "drizzle-orm";
+import { apps, projects } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware } from "../middleware/auth";
 
@@ -14,22 +8,121 @@ const myApps = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 myApps.use("*", authMiddleware);
 
+type ProjectMember = {
+  userId: string;
+  permission: "view" | "edit";
+  grantedBy: string;
+  grantedAt: string;
+};
+
 /**
- * GET /my/apps
- * List all apps the logged-in user can access
+ * Helper: check if a user is a member of a project's members JSONB array
  */
-myApps.get("/", async (c) => {
+function isProjectMember(
+  members: ProjectMember[] | null | undefined,
+  userId: string
+): ProjectMember | undefined {
+  if (!members || !Array.isArray(members)) return undefined;
+  return members.find((m) => m.userId === userId);
+}
+
+/**
+ * GET /my/projects
+ * List all projects the logged-in user can access
+ */
+myApps.get("/projects", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const userRole = c.get("userRole");
   const orgId = c.get("orgId");
 
-  let userApps;
-
-  // Super admin has no org — return empty
   if (userRole === "super_admin") {
     return c.json([]);
   }
+
+  let userProjects;
+
+  if (userRole === "org_admin") {
+    // Admin gets all projects in the org
+    userProjects = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.orgId, orgId!));
+  } else {
+    // Member gets only projects they're assigned to
+    const allProjects = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.orgId, orgId!));
+
+    userProjects = allProjects.filter((p) =>
+      isProjectMember(p.members as ProjectMember[], userId)
+    );
+  }
+
+  return c.json(userProjects);
+});
+
+/**
+ * GET /my/projects/:projectId/apps
+ * List all apps in a project the user has access to
+ */
+myApps.get("/projects/:projectId/apps", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const userRole = c.get("userRole");
+  const orgId = c.get("orgId");
+  const projectId = c.req.param("projectId");
+
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+
+  if (!project) {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  // Org scope check
+  if (userRole !== "super_admin" && project.orgId !== orgId) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  // Member must be assigned to the project
+  if (userRole === "member") {
+    const membership = isProjectMember(
+      project.members as ProjectMember[],
+      userId
+    );
+    if (!membership) {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+  }
+
+  const projectApps = await db
+    .select()
+    .from(apps)
+    .where(and(eq(apps.projectId, projectId), eq(apps.isActive, true)));
+
+  return c.json(projectApps);
+});
+
+/**
+ * GET /my/apps
+ * List all apps the logged-in user can access (flat list across all projects)
+ */
+myApps.get("/apps", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const userRole = c.get("userRole");
+  const orgId = c.get("orgId");
+
+  if (userRole === "super_admin") {
+    return c.json([]);
+  }
+
+  let userApps;
 
   if (userRole === "org_admin") {
     // Admin gets all active apps in the org
@@ -43,32 +136,29 @@ myApps.get("/", async (c) => {
         projectName: projects.name,
         icon: apps.icon,
         config: apps.config,
-        permission: appPermissions.permission,
         createdAt: apps.createdAt,
         updatedAt: apps.updatedAt,
       })
       .from(apps)
       .innerJoin(projects, eq(projects.id, apps.projectId))
-      .leftJoin(
-        appPermissions,
-        and(
-          eq(appPermissions.appId, apps.id),
-          eq(appPermissions.userId, userId)
-        )
-      )
       .where(and(eq(projects.orgId, orgId!), eq(apps.isActive, true)));
   } else {
-    // Member gets explicitly permitted apps + the org's default app
-    // First, check if org has a default app
-    const [org] = orgId
-      ? await db
-          .select({ defaultAppId: organizations.defaultAppId })
-          .from(organizations)
-          .where(eq(organizations.id, orgId))
-          .limit(1)
-      : [null];
+    // Member: get projects they're assigned to, then fetch apps from those
+    const allProjects = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.orgId, orgId!));
 
-    // Get explicitly permitted apps
+    const memberProjects = allProjects.filter((p) =>
+      isProjectMember(p.members as ProjectMember[], userId)
+    );
+
+    if (memberProjects.length === 0) {
+      return c.json([]);
+    }
+
+    const memberProjectIds = memberProjects.map((p) => p.id);
+
     userApps = await db
       .select({
         id: apps.id,
@@ -79,39 +169,17 @@ myApps.get("/", async (c) => {
         projectName: projects.name,
         icon: apps.icon,
         config: apps.config,
-        permission: appPermissions.permission,
         createdAt: apps.createdAt,
         updatedAt: apps.updatedAt,
       })
-      .from(appPermissions)
-      .innerJoin(apps, eq(apps.id, appPermissions.appId))
+      .from(apps)
       .innerJoin(projects, eq(projects.id, apps.projectId))
-      .where(and(eq(appPermissions.userId, userId), eq(apps.isActive, true)));
-
-    // If org has a default app and it's not already in the list, add it
-    if (org?.defaultAppId && !userApps.find((a) => a.id === org.defaultAppId)) {
-      const [defaultApp] = await db
-        .select({
-          id: apps.id,
-          name: apps.name,
-          type: apps.type,
-          description: apps.description,
-          projectId: apps.projectId,
-          projectName: projects.name,
-          icon: apps.icon,
-          config: apps.config,
-          createdAt: apps.createdAt,
-          updatedAt: apps.updatedAt,
-        })
-        .from(apps)
-        .innerJoin(projects, eq(projects.id, apps.projectId))
-        .where(and(eq(apps.id, org.defaultAppId), eq(apps.isActive, true)))
-        .limit(1);
-
-      if (defaultApp) {
-        userApps.unshift({ ...defaultApp, permission: "view" });
-      }
-    }
+      .where(
+        and(
+          sql`${apps.projectId} IN ${memberProjectIds}`,
+          eq(apps.isActive, true)
+        )
+      );
   }
 
   return c.json(userApps);
@@ -119,9 +187,9 @@ myApps.get("/", async (c) => {
 
 /**
  * GET /my/apps/:appId
- * Get app details (only if user has permission)
+ * Get app details (only if user has access to its project)
  */
-myApps.get("/:appId", async (c) => {
+myApps.get("/apps/:appId", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const userRole = c.get("userRole");
@@ -147,44 +215,23 @@ myApps.get("/:appId", async (c) => {
     return c.json({ ...app.apps, projectName: app.projects.name });
   }
 
-  // Member must have explicit permission OR app must be the org's default
-  const [perm] = await db
-    .select()
-    .from(appPermissions)
-    .where(
-      and(
-        eq(appPermissions.userId, userId),
-        eq(appPermissions.appId, appId)
-      )
-    )
-    .limit(1);
-
-  if (!perm) {
-    // Check if this is the org's default app
-    const [org] = orgId
-      ? await db
-          .select({ defaultAppId: organizations.defaultAppId })
-          .from(organizations)
-          .where(eq(organizations.id, orgId))
-          .limit(1)
-      : [null];
-
-    if (!org?.defaultAppId || org.defaultAppId !== appId) {
+  // Member must be in the project's members list
+  if (userRole === "member") {
+    const membership = isProjectMember(
+      app.projects.members as ProjectMember[],
+      userId
+    );
+    if (!membership) {
       return c.json({ error: "Forbidden" }, 403);
     }
-
     return c.json({
       ...app.apps,
       projectName: app.projects.name,
-      permission: "view",
+      permission: membership.permission,
     });
   }
 
-  return c.json({
-    ...app.apps,
-    projectName: app.projects.name,
-    permission: perm.permission,
-  });
+  return c.json({ error: "Forbidden" }, 403);
 });
 
 export default myApps;

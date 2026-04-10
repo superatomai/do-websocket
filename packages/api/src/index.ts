@@ -45,8 +45,8 @@ app.route("/orgs", orgRoutes);
 app.route("/orgs/:orgId/users", usersRoutes);
 app.route("/orgs/:orgId/projects", projectsRoutes);
 app.route("/upload", uploadRoutes);
-app.route("/my/apps", myAppsRoutes); // must be before appsRoutes (mounted at /) to avoid adminOnly middleware
-app.route("/apps", permissionsRoutes); // handles /apps/:appId/permissions
+app.route("/my", myAppsRoutes); // handles /my/apps, /my/projects, /my/projects/:projectId/apps
+app.route("/", permissionsRoutes); // handles /projects/:projectId/members
 app.route("/", appsRoutes); // handles /projects/:projectId/apps and /apps/:appId
 
 // ─── 404 fallback ────────────────────────────────────────

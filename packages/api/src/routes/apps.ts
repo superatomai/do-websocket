@@ -1,14 +1,55 @@
 import { Hono } from "hono";
 import { eq, and } from "drizzle-orm";
-import { apps } from "../db/schema";
+import { apps, projects } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware, adminOnly } from "../middleware/auth";
 
 const appsRouter = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
+type ProjectMember = {
+  userId: string;
+  permission: "view" | "edit";
+  grantedBy: string;
+  grantedAt: string;
+};
+
+/**
+ * Helper: verify member has access to a project
+ */
+async function verifyProjectAccess(
+  db: any,
+  projectId: string,
+  userId: string,
+  userRole: string,
+  orgId: string | null
+): Promise<{ allowed: boolean; project?: any }> {
+  const [project] = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+
+  if (!project) return { allowed: false };
+
+  // Super admin and org admin (in their org) can access
+  if (userRole === "super_admin") return { allowed: true, project };
+  if (userRole === "org_admin" && project.orgId === orgId)
+    return { allowed: true, project };
+
+  // Member must be in the project's members list
+  if (userRole === "member") {
+    const members = (project.members as ProjectMember[]) || [];
+    if (members.some((m) => m.userId === userId)) {
+      return { allowed: true, project };
+    }
+  }
+
+  return { allowed: false, project };
+}
+
 /**
  * POST /projects/:projectId/apps
- * Create app in project
+ * Create app in project (admin only)
  */
 appsRouter.post("/projects/:projectId/apps", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
@@ -36,11 +77,19 @@ appsRouter.post("/projects/:projectId/apps", authMiddleware, adminOnly, async (c
 
 /**
  * GET /projects/:projectId/apps
- * List all apps in project
+ * List all apps in project. Members must be assigned to the project.
  */
 appsRouter.get("/projects/:projectId/apps", authMiddleware, async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
+  const userId = c.get("userId");
+  const userRole = c.get("userRole");
+  const orgId = c.get("orgId");
+
+  const { allowed } = await verifyProjectAccess(db, projectId, userId, userRole, orgId);
+  if (!allowed) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
 
   const projectApps = await db
     .select()
@@ -52,11 +101,14 @@ appsRouter.get("/projects/:projectId/apps", authMiddleware, async (c) => {
 
 /**
  * GET /apps/:appId
- * Get app details
+ * Get app details. Members must be assigned to the app's parent project.
  */
 appsRouter.get("/apps/:appId", authMiddleware, async (c) => {
   const db = c.get("db");
   const appId = c.req.param("appId");
+  const userId = c.get("userId");
+  const userRole = c.get("userRole");
+  const orgId = c.get("orgId");
 
   const [app] = await db
     .select()
@@ -68,12 +120,17 @@ appsRouter.get("/apps/:appId", authMiddleware, async (c) => {
     return c.json({ error: "App not found" }, 404);
   }
 
+  const { allowed } = await verifyProjectAccess(db, app.projectId, userId, userRole, orgId);
+  if (!allowed) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
   return c.json(app);
 });
 
 /**
  * PUT /apps/:appId
- * Update app
+ * Update app (admin only)
  */
 appsRouter.put("/apps/:appId", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
@@ -102,7 +159,7 @@ appsRouter.put("/apps/:appId", authMiddleware, adminOnly, async (c) => {
 
 /**
  * DELETE /apps/:appId
- * Delete app (cascades permissions via FK)
+ * Delete app (admin only)
  */
 appsRouter.delete("/apps/:appId", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
