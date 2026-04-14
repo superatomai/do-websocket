@@ -14,6 +14,7 @@ import appsRoutes from "./routes/apps";
 import permissionsRoutes from "./routes/permissions";
 import myAppsRoutes from "./routes/my-apps";
 import uploadRoutes from "./routes/upload";
+import analyticsRoutes from "./routes/analytics";
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -48,6 +49,7 @@ app.route("/upload", uploadRoutes);
 app.route("/my/apps", myAppsRoutes); // must be before appsRoutes (mounted at /) to avoid adminOnly middleware
 app.route("/apps", permissionsRoutes); // handles /apps/:appId/permissions
 app.route("/", appsRoutes); // handles /projects/:projectId/apps and /apps/:appId
+app.route("/", analyticsRoutes); // handles /analytics/chat
 
 // ─── 404 fallback ────────────────────────────────────────
 app.notFound((c) =>

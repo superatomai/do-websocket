@@ -7,8 +7,11 @@ import {
   timestamp,
   jsonb,
   serial,
+  integer,
+  numeric,
   pgEnum,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
@@ -244,5 +247,66 @@ export const ssoConfigsRelations = relations(ssoConfigs, ({ one }) => ({
   organization: one(organizations, {
     fields: [ssoConfigs.orgId],
     references: [organizations.id],
+  }),
+}));
+
+// ─── Analytics Status Enum ──────────────────────────────
+
+export const analyticsStatusEnum = pgEnum("analytics_status", [
+  "success",
+  "error",
+]);
+
+// ─── Chat Analytics ─────────────────────────────────────
+
+export const chatAnalytics = pgTable(
+  "chat_analytics",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "set null" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    threadId: varchar("thread_id", { length: 255 }).notNull(),
+    messageIndex: integer("message_index").notNull(),
+    question: text("question").notNull(),
+    sourcesUsed: jsonb("sources_used"), // [{ sourceId, sourceName, sourceType }]
+    sqlGenerated: text("sql_generated"),
+    model: varchar("model", { length: 255 }).notNull(),
+    inputTokens: integer("input_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    cost: numeric("cost", { precision: 12, scale: 6 }).notNull(),
+    latencyMs: integer("latency_ms").notNull(),
+    status: analyticsStatusEnum("status").notNull(),
+    errorMessage: text("error_message"),
+    feedback: varchar("feedback", { length: 50 }), // 'thumbs_up' | 'thumbs_down' | null
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("chat_analytics_user_id_idx").on(table.userId),
+    index("chat_analytics_org_id_idx").on(table.orgId),
+    index("chat_analytics_project_id_idx").on(table.projectId),
+    index("chat_analytics_created_at_idx").on(table.createdAt),
+    index("chat_analytics_model_idx").on(table.model),
+    index("chat_analytics_status_idx").on(table.status),
+  ]
+);
+
+export const chatAnalyticsRelations = relations(chatAnalytics, ({ one }) => ({
+  user: one(users, {
+    fields: [chatAnalytics.userId],
+    references: [users.id],
+  }),
+  organization: one(organizations, {
+    fields: [chatAnalytics.orgId],
+    references: [organizations.id],
+  }),
+  project: one(projects, {
+    fields: [chatAnalytics.projectId],
+    references: [projects.id],
   }),
 }));

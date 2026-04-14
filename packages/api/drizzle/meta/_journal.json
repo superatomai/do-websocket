@@ -43,6 +43,20 @@
       "when": 1771404090852,
       "tag": "0005_add_design_system",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1771404090853,
+      "tag": "0006_add_default_app",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1771404090854,
+      "tag": "0007_add_chat_analytics",
+      "breakpoints": true
     }
   ]
 }
