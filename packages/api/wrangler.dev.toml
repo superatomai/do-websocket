@@ -1,0 +1,24 @@
+name = "sa-api-dev"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[observability.logs]
+enabled = true
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "sa-assets"
+
+[vars]
+R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
+
+# Secrets (set once, then managed via Cloudflare dashboard or wrangler):
+#   pnpm wrangler secret put DATABASE_URL --config wrangler.dev.toml
+#   pnpm wrangler secret put JWT_SECRET --config wrangler.dev.toml
+#
+# DATABASE_URL: Dev Neon PostgreSQL connection string
+# JWT_SECRET: A fresh random secret (different from prod)
+#
+# Deploy:
+#   pnpm wrangler deploy --config wrangler.dev.toml

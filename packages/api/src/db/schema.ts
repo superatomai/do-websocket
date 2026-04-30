@@ -63,8 +63,8 @@ export const users = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
-    email: varchar("email", { length: 255 }).unique().notNull(),
-    username: varchar("username", { length: 100 }).unique(),
+    email: varchar("email", { length: 255 }).notNull(),
+    username: varchar("username", { length: 100 }),
     name: varchar("name", { length: 255 }).notNull(),
     passwordHash: varchar("password_hash", { length: 255 }),
     ssoSubject: varchar("sso_subject", { length: 500 }),
@@ -73,7 +73,11 @@ export const users = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [uniqueIndex("users_org_sso_subject_idx").on(table.orgId, table.ssoSubject)]
+  (table) => [
+    uniqueIndex("users_org_email_idx").on(table.orgId, table.email),
+    uniqueIndex("users_org_username_idx").on(table.orgId, table.username),
+    uniqueIndex("users_org_sso_subject_idx").on(table.orgId, table.ssoSubject),
+  ]
 );
 
 export const usersRelations = relations(users, ({ one, many }) => ({

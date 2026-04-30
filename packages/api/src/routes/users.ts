@@ -49,15 +49,15 @@ usersRouter.post("/", async (c) => {
     return c.json({ error: "Only admins can create org_admin users" }, 403);
   }
 
-  // Check if email already exists
+  // Check if email already exists within this org
   const [existing] = await db
     .select()
     .from(users)
-    .where(eq(users.email, email))
+    .where(and(eq(users.email, email), eq(users.orgId, orgId)))
     .limit(1);
 
   if (existing) {
-    return c.json({ error: "A user with this email already exists" }, 409);
+    return c.json({ error: "A user with this email already exists in this organization" }, 409);
   }
 
   const passwordHash = await hashPassword(password);

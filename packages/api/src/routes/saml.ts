@@ -294,11 +294,11 @@ saml.post("/acs", async (c) => {
       .limit(1);
 
     if (!user) {
-      // Try by email
+      // Try by email scoped to this org
       [user] = await db
         .select()
         .from(users)
-        .where(eq(users.email, identity.email))
+        .where(and(eq(users.orgId, orgId), eq(users.email, identity.email)))
         .limit(1);
 
       if (user) {

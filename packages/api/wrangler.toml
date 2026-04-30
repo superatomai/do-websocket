@@ -17,8 +17,6 @@ R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
 # These should be set as secrets, not in this file:
 #   wrangler secret put DATABASE_URL
 #   wrangler secret put JWT_SECRET
-#   wrangler secret put CLERK_WEBHOOK_SECRET
 #
-# DATABASE_URL: Your Neon PostgreSQL connection string (same as do-websocket)
+# DATABASE_URL: Prod Neon PostgreSQL connection string
 # JWT_SECRET: Secret key for signing/verifying JWTs
-# CLERK_WEBHOOK_SECRET: Signing secret from Clerk Dashboard → Webhooks (starts with whsec_)

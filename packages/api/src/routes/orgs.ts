@@ -68,17 +68,6 @@ orgs.post("/", authMiddleware, superAdminOnly, async (c) => {
       return c.json({ error: "Admin password must be at least 8 characters" }, 400);
     }
 
-    // Check email uniqueness
-    const [existingUser] = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, admin.email))
-      .limit(1);
-
-    if (existingUser) {
-      return c.json({ error: "A user with this email already exists" }, 409);
-    }
-
     const passwordHash = await hashPassword(admin.password);
 
     const [adminUser] = await db

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { SignJWT } from "jose";
 import { users, organizations, appPermissions, apps, projects } from "../db/schema";
 import type { Env, AppVariables } from "../types";
@@ -13,44 +13,76 @@ const auth = new Hono<{ Bindings: Env; Variables: AppVariables }>();
  */
 auth.post("/login", async (c) => {
   const db = c.get("db");
-  const { email, username, password } = await c.req.json<{
+  const { email, username, password, orgSlug } = await c.req.json<{
     email?: string;
     username?: string;
     password: string;
+    orgSlug?: string;
   }>();
 
   if ((!email && !username) || !password) {
     return c.json({ error: "Email or username, and password are required" }, 400);
   }
 
-  // Find user by email or username
-  const identifier = email
-    ? eq(users.email, email)
-    : eq(users.username, username!);
-
-  const [user] = await db
-    .select()
-    .from(users)
-    .where(and(identifier, eq(users.isActive, true)))
-    .limit(1);
-
-  if (!user) {
-    return c.json({ error: "Invalid email or password" }, 401);
-  }
-
-  // Verify password using Web Crypto (SHA-256 hash comparison)
+  // Hash the incoming password once for comparison
   const encoder = new TextEncoder();
-  const data = encoder.encode(password);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(password));
   const hashHex = Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-  if (hashHex !== user.passwordHash) {
+  let matchedUsers: (typeof users.$inferSelect)[] = [];
+
+  if (email && orgSlug) {
+    // Org-scoped lookup — email is unique per org
+    const [org] = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.slug, orgSlug))
+      .limit(1);
+    if (!org) return c.json({ error: "Organization not found" }, 404);
+
+    const [found] = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.email, email), eq(users.orgId, org.id), eq(users.isActive, true)))
+      .limit(1);
+    if (found) matchedUsers = [found];
+  } else if (email) {
+    // No org context — find all active users with this email across orgs
+    matchedUsers = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.email, email), eq(users.isActive, true)));
+  } else {
+    // Username is globally unique
+    const [found] = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.username, username!), eq(users.isActive, true)))
+      .limit(1);
+    if (found) matchedUsers = [found];
+  }
+
+  // Filter to users whose password matches
+  const validUsers = matchedUsers.filter((u) => u.passwordHash === hashHex);
+
+  if (validUsers.length === 0) {
     return c.json({ error: "Invalid email or password" }, 401);
   }
 
-  // Sign JWT
+  // Log into the first matched user; also return all their orgs
+  const user = validUsers[0];
+
+  const allOrgIds = validUsers.map((u) => u.orgId).filter(Boolean) as string[];
+  const orgs = allOrgIds.length
+    ? await db
+        .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
+        .from(organizations)
+        .where(inArray(organizations.id, allOrgIds))
+    : [];
+
+  // Sign JWT for the first matched user
   const secret = new TextEncoder().encode(c.env.JWT_SECRET);
   const token = await new SignJWT({
     userId: user.id,
@@ -72,6 +104,7 @@ auth.post("/login", async (c) => {
       role: user.role,
       orgId: user.orgId,
     },
+    orgs,
   });
 });
 
