@@ -6,6 +6,15 @@ export type Env = {
   PLATFORM_UI_URL: string;
   R2_BUCKET: R2Bucket;
   R2_PUBLIC_URL: string; // e.g. "https://sa-assets.superatom.ai" or "https://pub-xxx.r2.dev"
+  // Private bucket for client-uploaded source files (Excel/CSV).
+  R2_SOURCE_FILES: R2Bucket;
+  // R2 S3-compatible API credentials — used by aws4fetch to presign URLs
+  // that the worker binding API can't generate natively.
+  R2_ACCOUNT_ID: string;
+  R2_ACCESS_KEY_ID: string;
+  R2_SECRET_ACCESS_KEY: string;
+  // Shared secret for backend → worker service calls (e.g. /upload/source-file/signed-get).
+  SA_INTERNAL_SERVICE_TOKEN: string;
 };
 
 export type AppVariables = {

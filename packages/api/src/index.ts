@@ -14,6 +14,7 @@ import appsRoutes from "./routes/apps";
 import permissionsRoutes from "./routes/permissions";
 import myAppsRoutes from "./routes/my-apps";
 import uploadRoutes from "./routes/upload";
+import sourceUploadRoutes from "./routes/source-upload";
 import analyticsRoutes from "./routes/analytics";
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
@@ -45,6 +46,8 @@ app.route("/auth", bootstrapRoutes);
 app.route("/orgs", orgRoutes);
 app.route("/orgs/:orgId/users", usersRoutes);
 app.route("/orgs/:orgId/projects", projectsRoutes);
+// More specific prefix first — Hono matches in registration order.
+app.route("/upload/source-file", sourceUploadRoutes);
 app.route("/upload", uploadRoutes);
 app.route("/my/apps", myAppsRoutes); // must be before appsRoutes (mounted at /) to avoid adminOnly middleware
 app.route("/apps", permissionsRoutes); // handles /apps/:appId/permissions

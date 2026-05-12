@@ -10,6 +10,13 @@ enabled = true
 binding = "R2_BUCKET"
 bucket_name = "sa-assets"
 
+# Private bucket for client-uploaded source files (Excel/CSV).
+# No public domain — all access mediated by signed URLs from this worker.
+# Create with: wrangler r2 bucket create sa-source-files
+[[r2_buckets]]
+binding = "R2_SOURCE_FILES"
+bucket_name = "sa-source-files"
+
 [vars]
 R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
 
@@ -17,6 +24,10 @@ R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
 # These should be set as secrets, not in this file:
 #   wrangler secret put DATABASE_URL
 #   wrangler secret put JWT_SECRET
+#   wrangler secret put R2_ACCOUNT_ID            # Cloudflare account id, used to derive R2 S3 endpoint
+#   wrangler secret put R2_ACCESS_KEY_ID         # R2 API token (S3-compatible) — for presigning multipart URLs
+#   wrangler secret put R2_SECRET_ACCESS_KEY     # R2 API token secret
+#   wrangler secret put SA_INTERNAL_SERVICE_TOKEN # shared secret for backend → worker calls (e.g. /signed-get)
 #
 # DATABASE_URL: Prod Neon PostgreSQL connection string
 # JWT_SECRET: Secret key for signing/verifying JWTs
