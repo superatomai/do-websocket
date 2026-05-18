@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/Broken/code/SA-Platform-UI/platform_ui/**)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}
