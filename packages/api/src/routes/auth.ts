@@ -7,6 +7,36 @@ import { authMiddleware } from "../middleware/auth";
 
 const auth = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
+// Neon's HTTP SQL endpoint occasionally returns 520 or hangs when routed
+// through certain Cloudflare colos. Bound each call and retry once so a
+// transient blip doesn't strand the user on a 95-second spinner.
+async function withDbRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  opts: { timeoutMs?: number; retries?: number } = {}
+): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? 6000;
+  const retries = opts.retries ?? 1;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await Promise.race([
+        fn(),
+        new Promise<T>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`db:${label} timed out after ${timeoutMs}ms`)),
+            timeoutMs
+          )
+        ),
+      ]);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`db:${label} attempt ${attempt + 1} failed`, err);
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * POST /auth/login
  * Login with email/password, returns JWT
@@ -31,81 +61,99 @@ auth.post("/login", async (c) => {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-  let matchedUsers: (typeof users.$inferSelect)[] = [];
+  try {
+    let matchedUsers: (typeof users.$inferSelect)[] = [];
 
-  if (email && orgSlug) {
-    // Org-scoped lookup — email is unique per org
-    const [org] = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.slug, orgSlug))
-      .limit(1);
-    if (!org) return c.json({ error: "Organization not found" }, 404);
+    if (email && orgSlug) {
+      // Org-scoped lookup — email is unique per org
+      const [org] = await withDbRetry("login:org-by-slug", () =>
+        db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.slug, orgSlug))
+          .limit(1)
+      );
+      if (!org) return c.json({ error: "Organization not found" }, 404);
 
-    const [found] = await db
-      .select()
-      .from(users)
-      .where(and(eq(users.email, email), eq(users.orgId, org.id), eq(users.isActive, true)))
-      .limit(1);
-    if (found) matchedUsers = [found];
-  } else if (email) {
-    // No org context — find all active users with this email across orgs
-    matchedUsers = await db
-      .select()
-      .from(users)
-      .where(and(eq(users.email, email), eq(users.isActive, true)));
-  } else {
-    // Username is globally unique
-    const [found] = await db
-      .select()
-      .from(users)
-      .where(and(eq(users.username, username!), eq(users.isActive, true)))
-      .limit(1);
-    if (found) matchedUsers = [found];
-  }
+      const [found] = await withDbRetry("login:user-by-email-org", () =>
+        db
+          .select()
+          .from(users)
+          .where(and(eq(users.email, email), eq(users.orgId, org.id), eq(users.isActive, true)))
+          .limit(1)
+      );
+      if (found) matchedUsers = [found];
+    } else if (email) {
+      // No org context — find all active users with this email across orgs
+      matchedUsers = await withDbRetry("login:users-by-email", () =>
+        db
+          .select()
+          .from(users)
+          .where(and(eq(users.email, email), eq(users.isActive, true)))
+      );
+    } else {
+      // Username is globally unique
+      const [found] = await withDbRetry("login:user-by-username", () =>
+        db
+          .select()
+          .from(users)
+          .where(and(eq(users.username, username!), eq(users.isActive, true)))
+          .limit(1)
+      );
+      if (found) matchedUsers = [found];
+    }
 
-  // Filter to users whose password matches
-  const validUsers = matchedUsers.filter((u) => u.passwordHash === hashHex);
+    // Filter to users whose password matches
+    const validUsers = matchedUsers.filter((u) => u.passwordHash === hashHex);
 
-  if (validUsers.length === 0) {
-    return c.json({ error: "Invalid email or password" }, 401);
-  }
+    if (validUsers.length === 0) {
+      return c.json({ error: "Invalid email or password" }, 401);
+    }
 
-  // Log into the first matched user; also return all their orgs
-  const user = validUsers[0];
+    // Log into the first matched user; also return all their orgs
+    const user = validUsers[0];
 
-  const allOrgIds = validUsers.map((u) => u.orgId).filter(Boolean) as string[];
-  const orgs = allOrgIds.length
-    ? await db
-        .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
-        .from(organizations)
-        .where(inArray(organizations.id, allOrgIds))
-    : [];
+    const allOrgIds = validUsers.map((u) => u.orgId).filter(Boolean) as string[];
+    const orgs = allOrgIds.length
+      ? await withDbRetry("login:orgs-by-ids", () =>
+          db
+            .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
+            .from(organizations)
+            .where(inArray(organizations.id, allOrgIds))
+        )
+      : [];
 
-  // Sign JWT for the first matched user
-  const secret = new TextEncoder().encode(c.env.JWT_SECRET);
-  const token = await new SignJWT({
-    userId: user.id,
-    orgId: user.orgId,
-    role: user.role,
-  })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime("7d")
-    .sign(secret);
-
-  return c.json({
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      name: user.name,
-      role: user.role,
+    // Sign JWT for the first matched user
+    const secret = new TextEncoder().encode(c.env.JWT_SECRET);
+    const token = await new SignJWT({
+      userId: user.id,
       orgId: user.orgId,
-    },
-    orgs,
-  });
+      role: user.role,
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime("7d")
+      .sign(secret);
+
+    return c.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        name: user.name,
+        role: user.role,
+        orgId: user.orgId,
+      },
+      orgs,
+    });
+  } catch (err) {
+    console.error("login failed", err);
+    return c.json(
+      { error: "Login is temporarily unavailable. Please try again." },
+      503
+    );
+  }
 });
 
 /**
