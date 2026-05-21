@@ -114,7 +114,7 @@ projectsRouter.get("/:projectId", async (c) => {
 projectsRouter.put("/:projectId", async (c) => {
   const db = c.get("db");
   const projectId = c.req.param("projectId");
-  const body = await c.req.json<{ name?: string; slug?: string; description?: string; icon?: string; designSystem?: Record<string, unknown> }>();
+  const body = await c.req.json<{ name?: string; slug?: string; description?: string; icon?: string; designSystem?: Record<string, unknown>; config?: Record<string, unknown> }>();
 
   const [updated] = await db
     .update(projects)

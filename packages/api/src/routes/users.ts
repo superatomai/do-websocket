@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { users, appPermissions, apps } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware, adminOnly, orgScopeGuard } from "../middleware/auth";
@@ -49,14 +49,52 @@ usersRouter.post("/", async (c) => {
     return c.json({ error: "Only admins can create org_admin users" }, 403);
   }
 
-  // Check if email already exists within this org
+  // Case-insensitive email lookup within this org
   const [existing] = await db
     .select()
     .from(users)
-    .where(and(eq(users.email, email), eq(users.orgId, orgId)))
+    .where(and(sql`lower(${users.email}) = lower(${email})`, eq(users.orgId, orgId)))
     .limit(1);
 
   if (existing) {
+    if (!existing.isActive) {
+      // Only check username conflict if the new username differs from the user's own
+      if (username !== existing.username) {
+        const [usernameConflict] = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(and(sql`lower(${users.username}) = lower(${username})`, eq(users.orgId, orgId)))
+          .limit(1);
+        if (usernameConflict) {
+          return c.json({ error: "Username is already taken by another user in this organization" }, 409);
+        }
+      }
+
+      // Reactivate with new credentials
+      try {
+        const passwordHash = await hashPassword(password);
+        const [reactivated] = await db
+          .update(users)
+          .set({ username, name, passwordHash, role: role || "member", isActive: true, updatedAt: new Date() })
+          .where(eq(users.id, existing.id))
+          .returning({
+            id: users.id,
+            orgId: users.orgId,
+            email: users.email,
+            username: users.username,
+            name: users.name,
+            role: users.role,
+            isActive: users.isActive,
+            createdAt: users.createdAt,
+          });
+        return c.json(reactivated, 200);
+      } catch (err: any) {
+        if (err?.code === "23505") {
+          return c.json({ error: "Username is already taken by another user in this organization" }, 409);
+        }
+        throw err;
+      }
+    }
     return c.json({ error: "A user with this email already exists in this organization" }, 409);
   }
 
