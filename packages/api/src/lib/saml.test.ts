@@ -10,9 +10,24 @@
  */
 
 import * as nodeCrypto from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { SignedXml } from "xml-crypto";
 import { DOMParser } from "@xmldom/xmldom";
-import { validateSamlResponse, SamlError } from "./saml";
+import { validateSamlResponse, verifySamlSignature, SamlError } from "./saml";
+
+const XMLDSIG_NS = "http://www.w3.org/2000/09/xmldsig#";
+
+/** Pull every X509Certificate out of a parsed SAML doc (KeyInfo of each signature). */
+function extractCertsFromXml(doc: Document): string[] {
+  const certEls = doc.getElementsByTagNameNS(XMLDSIG_NS, "X509Certificate");
+  const certs: string[] = [];
+  for (let i = 0; i < certEls.length; i++) {
+    const c = (certEls[i].textContent || "").replace(/\s+/g, "");
+    if (c && !certs.includes(c)) certs.push(c);
+  }
+  return certs;
+}
 
 // ─── Generate a self-signed X.509 certificate ──────────
 
@@ -379,13 +394,37 @@ async function runTests() {
     const spki = extractSpkiForTest(new Uint8Array(certDer));
     const key = await crypto.subtle.importKey(
       "spki",
-      spki.buffer,
+      spki.buffer as ArrayBuffer,
       { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
       false,
       ["verify"]
     );
     assert(key.type === "public", `Expected public key, got ${key.type}`);
     assert(key.algorithm.name === "RSASSA-PKCS1-v1_5", `Wrong algorithm: ${key.algorithm.name}`);
+  });
+
+  // ── Test 7: Real captured Okta response (regression for dual signature + xmlns:xs PrefixList) ──
+  // Fixture is the raw base64 SAMLResponse captured from the ACS endpoint. This exercises the
+  // exact canonicalization the hand-rolled verifier got wrong:
+  //   - Okta signs BOTH the Response and the Assertion (enveloped transform must not strip the nested sig)
+  //   - the signature carries <ec:InclusiveNamespaces PrefixList="xs"> (xmlns:xs must survive C14N)
+  // Signature/digest verification is time-independent, so the assertion's expired timestamps don't matter.
+  await test("verifies real captured Okta SAML response (canonicalization regression)", async () => {
+    const fixturePath = path.join(__dirname, "__fixtures__", "okta-saml-response.b64");
+    if (!fs.existsSync(fixturePath)) {
+      console.log("    (skipped — drop the raw base64 SAMLResponse at src/lib/__fixtures__/okta-saml-response.b64)");
+      return;
+    }
+    const b64 = fs.readFileSync(fixturePath, "utf8").replace(/\s+/g, "");
+    const xml = Buffer.from(b64, "base64").toString("utf8");
+    const doc = new DOMParser().parseFromString(xml, "text/xml");
+    const certs = extractCertsFromXml(doc);
+    assert(certs.length > 0, "No X509Certificate found in the fixture");
+    const signed = await verifySamlSignature(xml, doc, certs);
+    assert(
+      signed === "Response" || signed === "Assertion",
+      `signature did not verify (returned ${signed})`
+    );
   });
 
   console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

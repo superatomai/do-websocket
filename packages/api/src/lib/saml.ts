@@ -7,6 +7,7 @@ const SAML_PROTOCOL_NS = "urn:oasis:names:tc:SAML:2.0:protocol";
 const SAML_ASSERTION_NS = "urn:oasis:names:tc:SAML:2.0:assertion";
 const SAML_METADATA_NS = "urn:oasis:names:tc:SAML:2.0:metadata";
 const XMLDSIG_NS = "http://www.w3.org/2000/09/xmldsig#";
+const EXC_C14N_NS = "http://www.w3.org/2001/10/xml-exc-c14n#";
 
 const SAML_STATUS_SUCCESS = "urn:oasis:names:tc:SAML:2.0:status:Success";
 
@@ -424,23 +425,50 @@ function collectAncestorNamespaces(
 }
 
 /**
- * Canonicalize an XML element using Exclusive C14N,
- * automatically including ancestor namespace declarations.
+ * Read the Exclusive C14N InclusiveNamespaces PrefixList from a
+ * <Transform> or <CanonicalizationMethod> element. These prefixes must be
+ * preserved during canonicalization even when not "visibly utilized"
+ * (e.g. Okta sets PrefixList="xs" because attribute values use xsi:type="xs:string").
  */
-function canonicalizeElement(elem: Element): string {
-  const ancestorNamespaces = collectAncestorNamespaces(elem);
-  const c14n = new ExclusiveCanonicalization();
-  return c14n.process(elem, { ancestorNamespaces }).toString();
+function getInclusivePrefixList(parent: Element): string[] {
+  const incl = parent.getElementsByTagNameNS(EXC_C14N_NS, "InclusiveNamespaces");
+  if (incl.length === 0) return [];
+  return (incl[0].getAttribute("PrefixList") || "").split(/\s+/).filter(Boolean);
 }
 
 /**
- * Remove the Signature element from a cloned node (enveloped signature transform).
+ * Canonicalize an XML element using Exclusive C14N,
+ * automatically including ancestor namespace declarations.
+ */
+function canonicalizeElement(
+  elem: Element,
+  inclusiveNamespacesPrefixList: string[] = []
+): string {
+  const ancestorNamespaces = collectAncestorNamespaces(elem);
+  const c14n = new ExclusiveCanonicalization();
+  return c14n.process(elem, { ancestorNamespaces, inclusiveNamespacesPrefixList }).toString();
+}
+
+/**
+ * Apply the enveloped-signature transform to a cloned node.
+ *
+ * Only the signature that directly envelops this element is removed — NOT
+ * signatures over nested elements. This matters when both the Response and the
+ * Assertion are signed (e.g. Okta): when verifying the Response, the Assertion's
+ * own signature is part of the digested content and must be preserved.
  */
 function removeSignatureFromElement(elem: Element): Element {
   const cloned = elem.cloneNode(true) as Element;
-  const sigs = cloned.getElementsByTagNameNS(XMLDSIG_NS, "Signature");
-  for (let i = sigs.length - 1; i >= 0; i--) {
-    sigs[i].parentNode?.removeChild(sigs[i]);
+  const children = cloned.childNodes;
+  for (let i = children.length - 1; i >= 0; i--) {
+    const child = children[i] as Element;
+    if (
+      child.nodeType === 1 /* ELEMENT_NODE */ &&
+      child.localName === "Signature" &&
+      child.namespaceURI === XMLDSIG_NS
+    ) {
+      cloned.removeChild(child);
+    }
   }
   return cloned;
 }
@@ -448,8 +476,11 @@ function removeSignatureFromElement(elem: Element): Element {
 /**
  * Verify the XML signature on the SAML Response or Assertion using Web Crypto API.
  * Returns which element was signed.
+ *
+ * Exported for regression testing against captured real-world IdP responses
+ * (signature/canonicalization only — independent of assertion time conditions).
  */
-async function verifySamlSignature(
+export async function verifySamlSignature(
   _xmlString: string,
   doc: Document,
   certificates: string[]
@@ -514,16 +545,21 @@ async function verifySamlSignature(
     // Apply transforms
     const transformEls = ref.getElementsByTagNameNS(XMLDSIG_NS, "Transform");
     let transformedElement = referencedElement;
+    let refPrefixList: string[] = [];
     for (let t = 0; t < transformEls.length; t++) {
-      const transformAlgo = transformEls[t].getAttribute("Algorithm") || "";
+      const transformEl = transformEls[t] as Element;
+      const transformAlgo = transformEl.getAttribute("Algorithm") || "";
       if (transformAlgo === "http://www.w3.org/2000/09/xmldsig#enveloped-signature") {
         transformedElement = removeSignatureFromElement(transformedElement);
+      } else if (transformAlgo === EXC_C14N_NS) {
+        // Exclusive C14N is applied during canonicalization below; capture its
+        // InclusiveNamespaces PrefixList so it canonicalizes the same bytes the IdP signed.
+        refPrefixList = getInclusivePrefixList(transformEl);
       }
-      // Exclusive C14N is applied during canonicalization below
     }
 
     // Canonicalize and compute digest
-    const canonXml = canonicalizeElement(transformedElement);
+    const canonXml = canonicalizeElement(transformedElement, refPrefixList);
 
     // Get expected digest
     const digestMethodEls = ref.getElementsByTagNameNS(XMLDSIG_NS, "DigestMethod");
@@ -547,8 +583,15 @@ async function verifySamlSignature(
     }
   }
 
-  // Canonicalize SignedInfo for signature verification
-  const canonSignedInfo = canonicalizeElement(signedInfoEl);
+  // Canonicalize SignedInfo for signature verification, honoring any
+  // InclusiveNamespaces PrefixList on its CanonicalizationMethod.
+  const canonMethodEls = signedInfoEl.getElementsByTagNameNS(
+    XMLDSIG_NS,
+    "CanonicalizationMethod"
+  );
+  const signedInfoPrefixList =
+    canonMethodEls.length > 0 ? getInclusivePrefixList(canonMethodEls[0] as Element) : [];
+  const canonSignedInfo = canonicalizeElement(signedInfoEl, signedInfoPrefixList);
 
   // Try each stored certificate (supports key rotation)
   const errors: string[] = [];
