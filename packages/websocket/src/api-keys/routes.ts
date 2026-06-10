@@ -3,6 +3,7 @@ import {
     getApiKeyInfo,
     revokeApiKey,
     listApiKeys,
+    ApiKeyConflictError,
 } from './service';
 import { CreateApiKeyRequest, ApiResponse, CreateApiKeyData, ApiKeyInfo } from './types';
 
@@ -76,11 +77,13 @@ export async function handleApiKeyRoutes(
         });
     }
 
-    // Validate service key for all API key operations
-    // const authError = validateServiceKey(request, env);
-    // if (authError) {
-    //     return jsonResponse(authError, 401);
-    // }
+    // Validate service key for all API key operations (create / list / revoke).
+    // These are admin endpoints — gated by SUPERATOM_SERVICE_KEY, sent as
+    // `Authorization: Bearer <service-key>`. (CORS preflight handled above.)
+    const authError = validateServiceKey(request, env);
+    if (authError) {
+        return jsonResponse(authError, 401);
+    }
 
     // Check if DATABASE_URL is configured
     if (!env.DATABASE_URL) {
@@ -161,6 +164,13 @@ export async function handleApiKeyRoutes(
         }, 405);
 
     } catch (error: any) {
+        // A project already having an active key is a conflict, not a server error.
+        if (error instanceof ApiKeyConflictError) {
+            return jsonResponse({
+                success: false,
+                errors: [error.message],
+            }, 409);
+        }
         console.error('API key route error:', error);
         return jsonResponse({
             success: false,

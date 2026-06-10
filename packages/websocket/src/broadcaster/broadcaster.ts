@@ -1,12 +1,19 @@
-import { BroadcastClient, BroadcastMessage, Env } from './types';
+import { BroadcastClient, BroadcastMessage, Env, DataSourceRecord } from './types';
 import { UsageStats } from '../usage/types';
 
 // Storage keys
 const STORAGE_KEY_TOTAL_REQUESTS = 'totalRequests';
 const STORAGE_KEY_DAILY_REQUESTS = 'dailyRequests';
+const STORAGE_KEY_DATA_SOURCES = 'dataSources';
+
+// Projects exempt from API-key auth (proxies on these may register without a key).
+const DEMO_PROJECTS = ['demo', 'demo-prod'];
 
 // Type for daily requests map: { "2025-01-28": 150, "2025-01-27": 200, ... }
 type DailyRequestsMap = Record<string, number>;
+
+// Per-project data-source registry, KEYED BY Data Source ID.
+type DataSourcesMap = Record<string, DataSourceRecord>;
 
 export class Broadcaster implements DurableObject {
 	private state: DurableObjectState;
@@ -79,6 +86,155 @@ export class Broadcaster implements DurableObject {
 		};
 	}
 
+	// ============================================================
+	// Data-source registry, KEYED BY Data Source ID, persisted so it survives
+	// DO hibernation. The DO owns routing — see docs/cross-machine-source-proxy.md.
+	// ============================================================
+
+	private async loadDataSources(): Promise<DataSourcesMap> {
+		return (await this.state.storage.get<DataSourcesMap>(STORAGE_KEY_DATA_SOURCES)) || {};
+	}
+
+	private async saveDataSources(records: DataSourcesMap): Promise<void> {
+		await this.state.storage.put(STORAGE_KEY_DATA_SOURCES, records);
+	}
+
+	private isAuthenticated(ws: WebSocket): boolean {
+		if (DEMO_PROJECTS.includes(this.projectId)) return true;
+		const meta = (ws as any).deserializeAttachment();
+		return !!(meta && meta.authenticated);
+	}
+
+	/**
+	 * REGISTER_PROXY — a proxy announces the data sources it manages. Records are
+	 * keyed by Data Source ID and carry the proxy's current wsId (refreshed each
+	 * call). We first clear any records previously owned by this connection so a
+	 * shrunk source set doesn't leave stale entries. Requires an authenticated
+	 * connection (project API key).
+	 */
+	private async handleRegisterProxy(ws: WebSocket, senderId: string, msg: BroadcastMessage): Promise<void> {
+		if (!this.isAuthenticated(ws)) {
+			this.sendError(senderId, 'REGISTER_PROXY rejected: connection is not authenticated with the project API key');
+			return;
+		}
+
+		const proxyId = msg.payload?.proxyId;
+		const dataSourceIds: string[] = Array.isArray(msg.payload?.dataSourceIds) ? msg.payload.dataSourceIds : [];
+
+		if (!proxyId || typeof proxyId !== 'string') {
+			this.sendError(senderId, 'REGISTER_PROXY requires payload.proxyId (string)');
+			return;
+		}
+
+		const records = await this.loadDataSources();
+		// Clear this connection's previous claims, then re-add the advertised set.
+		for (const [id, rec] of Object.entries(records)) {
+			if (rec.wsId === senderId) delete records[id];
+		}
+		const now = Date.now();
+		for (const dataSourceId of dataSourceIds) {
+			records[dataSourceId] = { dataSourceId, proxyId, wsId: senderId, lastSeen: now };
+		}
+		await this.saveDataSources(records);
+
+		console.log(`Broadcaster ${this.projectId}: registered proxy ${proxyId} → [${dataSourceIds.join(', ')}]`);
+
+		try {
+			ws.send(JSON.stringify({
+				id: msg.id || crypto.randomUUID(),
+				type: 'PROXY_REGISTERED',
+				from: { type: 'system' },
+				payload: { proxyId, dataSourceCount: dataSourceIds.length, ok: true, timestamp: now }
+			} as BroadcastMessage));
+		} catch (error) {
+			console.error(`Broadcaster ${this.projectId}: failed to ack REGISTER_PROXY:`, error);
+		}
+	}
+
+	/**
+	 * DS_QUERY — the requester sends only a Data Source ID (no target). The DO
+	 * looks up the owner and FORWARDS the query to the owner's live socket,
+	 * stamping from.id with the requester's wsId so the owner can reply straight
+	 * back. If there's no owner / it's offline, the DO returns DS_ERROR to the
+	 * requester immediately — the requester never waits indefinitely.
+	 */
+	private async handleDsQuery(ws: WebSocket, senderId: string, msg: BroadcastMessage): Promise<void> {
+		const dataSourceId = msg.payload?.dataSourceId;
+		const replyError = (error: string, code: string) => this.sendDsErrorTo(senderId, msg.id, error, code);
+
+		// An unauthenticated connection may neither expose nor query data sources.
+		if (!this.isAuthenticated(ws)) {
+			return replyError('DS_QUERY rejected: connection is not authenticated with the project API key', 'UNAUTHENTICATED');
+		}
+
+		if (!dataSourceId || typeof dataSourceId !== 'string') {
+			return replyError('DS_QUERY requires payload.dataSourceId (string)', 'BAD_REQUEST');
+		}
+
+		const records = await this.loadDataSources();
+		const rec = records[dataSourceId];
+		if (!rec) return replyError(`No proxy owns data source '${dataSourceId}'`, 'NO_OWNER');
+
+		const owner = this.clients.get(rec.wsId);
+		if (!owner || owner.socket.readyState !== WebSocket.OPEN) {
+			return replyError(`The proxy owning data source '${dataSourceId}' is not connected`, 'NO_OWNER');
+		}
+
+		// Forward to the owner; stamp from.id so the owner replies to the requester.
+		try {
+			owner.socket.send(JSON.stringify({
+				id: msg.id,
+				type: 'DS_QUERY',
+				from: { type: 'system', id: senderId },
+				to: { id: rec.wsId },
+				payload: { dataSourceId, sql: msg.payload?.sql, params: msg.payload?.params },
+			} as BroadcastMessage));
+		} catch (error) {
+			replyError(`Failed to forward DS_QUERY: ${(error as Error).message}`, 'FORWARD_FAILED');
+		}
+	}
+
+	private sendDsErrorTo(wsId: string, requestId: string, error: string, code: string): void {
+		const client = this.clients.get(wsId);
+		if (!client || client.socket.readyState !== WebSocket.OPEN) return;
+		try {
+			client.socket.send(JSON.stringify({
+				id: requestId,
+				type: 'DS_ERROR',
+				from: { type: 'system' },
+				payload: { error, code },
+			} as BroadcastMessage));
+		} catch (e) {
+			console.error(`Broadcaster ${this.projectId}: failed to send DS_ERROR:`, e);
+		}
+	}
+
+	/** Drop every data-source record owned by a (now gone) connection. */
+	private async removeDataSourcesByWsId(wsId: string): Promise<void> {
+		const records = await this.loadDataSources();
+		let changed = false;
+		for (const [id, rec] of Object.entries(records)) {
+			if (rec.wsId === wsId) { delete records[id]; changed = true; }
+		}
+		if (changed) await this.saveDataSources(records);
+	}
+
+	private async getRegistry(): Promise<Response> {
+		this.syncClientsFromWebSockets();
+		const records = await this.loadDataSources();
+		const list = Object.values(records).map(r => ({
+			...r,
+			connected: this.clients.has(r.wsId),
+		}));
+		return new Response(JSON.stringify({
+			projectId: this.projectId,
+			dataSources: list,
+			timestamp: Date.now()
+		}, null, 2), {
+			headers: { 'Content-Type': 'application/json' }
+		});
+	}
+
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		const urlProjectId = url.searchParams.get('projectId');
@@ -101,6 +257,10 @@ export class Broadcaster implements DurableObject {
 
 		if (url.pathname === '/status') {
 			return this.getStatus();
+		}
+
+		if (url.pathname === '/registry') {
+			return this.getRegistry();
 		}
 
 		if (url.pathname === '/health') {
@@ -156,11 +316,19 @@ export class Broadcaster implements DurableObject {
 			// Accept the WebSocket for hibernation
 			this.state.acceptWebSocket(server);
 
+			// Auth: the worker (src/index.ts) rejects an INVALID project API key
+			// before the request reaches us, so a key present here is a valid one.
+			// Demo projects are exempt. Stored so REGISTER_PROXY/DS_QUERY can require it.
+			const authenticated = DEMO_PROJECTS.includes(this.projectId)
+				|| !!url.searchParams.get('apiKey')
+				|| !!request.headers.get('x-api-key');
+
 			// Attach metadata using serializeAttachment for hibernatable WebSockets
 			const clientMetadata = {
 				clientId: clientId,
 				type: type,
 				connectedAt: connectedAt,
+				authenticated: authenticated,
 				userAgent: request.headers.get('User-Agent') || 'unknown',
 				origin: request.headers.get('Origin') || 'unknown'
 			};
@@ -284,6 +452,8 @@ export class Broadcaster implements DurableObject {
 		// Sync clients to get accurate status
 		this.syncClientsFromWebSockets();
 
+		const dataSources = await this.loadDataSources();
+
 		const status = {
 			projectId: this.projectId,
 			clientCount: this.clients.size,
@@ -294,6 +464,10 @@ export class Broadcaster implements DurableObject {
 				connectedFor: Date.now() - client.connectedAt,
 				socketState: client.socket.readyState,
 				metadata: client.metadata
+			})),
+			dataSources: Object.values(dataSources).map(r => ({
+				...r,
+				connected: this.clients.has(r.wsId)
 			})),
 			timestamp: Date.now()
 		};
@@ -421,6 +595,23 @@ export class Broadcaster implements DurableObject {
 			}
 		}
 
+		// Data-source registry / routing control messages — handled by the DO
+		// directly and NOT relayed. See docs/cross-machine-source-proxy.md.
+		// (DS_ACK / DS_RESULT / DS_ERROR from a proxy carry to:{id} and ride the
+		// generic point-to-point relay below straight back to the requester.)
+		if (ws_json_message.type === 'REGISTER_PROXY') {
+			await this.handleRegisterProxy(ws, senderId, ws_json_message);
+			return;
+		}
+		if (ws_json_message.type === 'UNREGISTER_PROXY') {
+			await this.removeDataSourcesByWsId(senderId);
+			return;
+		}
+		if (ws_json_message.type === 'DS_QUERY') {
+			await this.handleDsQuery(ws, senderId, ws_json_message);
+			return;
+		}
+
 		// Adding the clientid as from.id
 		if (ws_json_message.from && typeof ws_json_message.from === 'object') {
 			ws_json_message.from.id = senderId;
@@ -476,6 +667,10 @@ export class Broadcaster implements DurableObject {
 
 		this.clients.delete(clientInfo.clientId);
 		this.lastActivity = Date.now();
+
+		// Drop any data-source records this connection owned, so queries are
+		// never routed to a machine that has gone away.
+		await this.removeDataSourcesByWsId(clientInfo.clientId);
 
 		// Schedule cleanup if room is empty
 		if (this.clients.size === 0) {

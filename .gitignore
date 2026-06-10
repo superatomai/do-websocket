@@ -6,3 +6,6 @@ dist/
 .env.local
 .dev.vars
 .DS_Store
+# Admin-only API key creation script (kept out of the shared repo by request)
+packages/websocket/scripts/create-api-key.sh
+packages/websocket/scripts/revoke-api-key.sh

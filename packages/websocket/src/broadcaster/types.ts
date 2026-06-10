@@ -28,3 +28,19 @@ export interface BroadcastClient {
 		origin: string | null;
 	};
 }
+
+/**
+ * One entry in the per-project data-source registry, KEYED BY Data Source ID.
+ * The DO always looks up by Data Source ID, so that is the primary key.
+ *
+ * - proxyId: stable id of the proxy that manages this data source.
+ * - wsId:    the CURRENT owning WebSocket connection (the DO's per-connection
+ *            `clientId`). Changes on reconnect, so it's refreshed on every
+ *            REGISTER_PROXY — it's where the DO forwards DS_QUERY messages.
+ */
+export interface DataSourceRecord {
+	dataSourceId: string;
+	proxyId: string;
+	wsId: string;
+	lastSeen: number;
+}

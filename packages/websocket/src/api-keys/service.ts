@@ -1,5 +1,13 @@
 import { ApiKey, CreateApiKeyRequest, CreateApiKeyData, ApiKeyInfo, ValidateApiKeyResult } from './types';
 
+/** Thrown when a project already has an active API key (a conflict, not a server error). */
+export class ApiKeyConflictError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'ApiKeyConflictError';
+    }
+}
+
 /**
  * Generate a secure API key with prefix
  * Format: sa_live_<32 random hex chars>
@@ -87,7 +95,7 @@ export async function createApiKey(
     );
 
     if (existing.length > 0) {
-        throw new Error(`Project ${projectId} already has an active API key. Revoke it first to create a new one.`);
+        throw new ApiKeyConflictError(`Project ${projectId} already has an active API key. Revoke it first to create a new one.`);
     }
 
     // Generate new key
