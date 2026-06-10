@@ -13,7 +13,7 @@ import {
   uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 // ─── Enums ───────────────────────────────────────────────
 
@@ -215,7 +215,14 @@ export const apiKeys = pgTable("api_keys", {
   description: varchar("description", { length: 500 }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
-});
+}, (table) => [
+  // At most one ACTIVE API key per project. Revoked rows (is_active = false)
+  // stay for history, so revoke→create rotation works. Replaces the need for a
+  // full UNIQUE(project_id) constraint, which would block rotation.
+  uniqueIndex("idx_api_keys_active")
+    .on(table.projectId)
+    .where(sql`${table.isActive} = true`),
+]);
 
 export const apiKeysRelations = relations(apiKeys, ({ one }) => ({
   organization: one(organizations, {
