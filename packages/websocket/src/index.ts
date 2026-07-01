@@ -47,16 +47,18 @@ export default {
 			);
 		}
 
-		// Auth model: the per-project API key is a SERVER-SIDE credential. The
-		// server connection types (data-agent, db-bridge, admin) MUST present a
-		// valid key — no fail-open, no demo bypass. The browser 'runtime' type
-		// loads from a public bundle and cannot safely hold the secret, so it
-		// connects without one; the broadcaster still blocks unauthenticated
-		// sockets from the data plane (REGISTER_PROXY / DS_QUERY).
+		// Auth model: the per-project API key is a SERVER-SIDE credential. Only
+		// the server components that connect the relay to customer data
+		// (data-agent, db-bridge) MUST present a valid key — no fail-open, no
+		// demo bypass. The browser clients ('runtime', 'admin') load from public
+		// bundles and cannot safely hold the secret, so they connect without one;
+		// the broadcaster still blocks unauthenticated sockets from the data
+		// plane (REGISTER_PROXY / DS_QUERY).
 		// API key can be passed via query param or header.
 		const apiKey = url.searchParams.get('apiKey') || request.headers.get('x-api-key');
 		const connectionType = url.searchParams.get('type');
-		const requiresApiKey = connectionType !== 'runtime';
+		const KEY_REQUIRED_TYPES = ['data-agent', 'db-bridge'];
+		const requiresApiKey = KEY_REQUIRED_TYPES.includes(connectionType ?? '');
 
 		if (requiresApiKey) {
 			// Reject server-side connections that present no API key at all.
