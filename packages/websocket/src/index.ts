@@ -47,43 +47,53 @@ export default {
 			);
 		}
 
-		// Validate API key only if provided (optional validation)
-		// API key can be passed via query param or header
+		// Auth is REQUIRED for every connection (no fail-open, no demo bypass).
+		// API key can be passed via query param or header.
 		const apiKey = url.searchParams.get('apiKey') || request.headers.get('x-api-key');
 
-		// Skip API key validation for demo projects
-		const skipValidationProjects = ['demo', 'demo-prod'];
-		const shouldSkipValidation = skipValidationProjects.includes(projectId);
+		// Reject connections that present no API key at all.
+		if (!apiKey) {
+			return new Response(
+				JSON.stringify({
+					error: 'Missing API key',
+					message:
+						'A per-project API key is required. Provide it via ?apiKey=sa_live_xxx or the x-api-key header.',
+					projectId,
+				}),
+				{
+					status: 401,
+					headers: { 'Content-Type': 'application/json' },
+				}
+			);
+		}
 
-		if (apiKey && !shouldSkipValidation) {
-			// Validate the API key against the database
-			if (!env.DATABASE_URL) {
-				return new Response(
-					JSON.stringify({
-						error: 'Server configuration error',
-						message: 'DATABASE_URL is not configured',
-					}),
-					{
-						status: 500,
-						headers: { 'Content-Type': 'application/json' },
-					}
-				);
-			}
+		// Validate the API key against the database
+		if (!env.DATABASE_URL) {
+			return new Response(
+				JSON.stringify({
+					error: 'Server configuration error',
+					message: 'DATABASE_URL is not configured',
+				}),
+				{
+					status: 500,
+					headers: { 'Content-Type': 'application/json' },
+				}
+			);
+		}
 
-			const validationResult = await validateApiKey(env.DATABASE_URL, projectId, apiKey);
-			if (!validationResult.valid) {
-				return new Response(
-					JSON.stringify({
-						error: 'Invalid API key',
-						message: validationResult.error || 'API key validation failed',
-						projectId,
-					}),
-					{
-						status: 403,
-						headers: { 'Content-Type': 'application/json' },
-					}
-				);
-			}
+		const validationResult = await validateApiKey(env.DATABASE_URL, projectId, apiKey);
+		if (!validationResult.valid) {
+			return new Response(
+				JSON.stringify({
+					error: 'Invalid API key',
+					message: validationResult.error || 'API key validation failed',
+					projectId,
+				}),
+				{
+					status: 403,
+					headers: { 'Content-Type': 'application/json' },
+				}
+			);
 		}
 
 		try {

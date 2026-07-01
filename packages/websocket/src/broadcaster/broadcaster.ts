@@ -6,9 +6,6 @@ const STORAGE_KEY_TOTAL_REQUESTS = 'totalRequests';
 const STORAGE_KEY_DAILY_REQUESTS = 'dailyRequests';
 const STORAGE_KEY_DATA_SOURCES = 'dataSources';
 
-// Projects exempt from API-key auth (proxies on these may register without a key).
-const DEMO_PROJECTS = ['demo', 'demo-prod'];
-
 // Type for daily requests map: { "2025-01-28": 150, "2025-01-27": 200, ... }
 type DailyRequestsMap = Record<string, number>;
 
@@ -100,7 +97,6 @@ export class Broadcaster implements DurableObject {
 	}
 
 	private isAuthenticated(ws: WebSocket): boolean {
-		if (DEMO_PROJECTS.includes(this.projectId)) return true;
 		const meta = (ws as any).deserializeAttachment();
 		return !!(meta && meta.authenticated);
 	}
@@ -316,11 +312,10 @@ export class Broadcaster implements DurableObject {
 			// Accept the WebSocket for hibernation
 			this.state.acceptWebSocket(server);
 
-			// Auth: the worker (src/index.ts) rejects an INVALID project API key
-			// before the request reaches us, so a key present here is a valid one.
-			// Demo projects are exempt. Stored so REGISTER_PROXY/DS_QUERY can require it.
-			const authenticated = DEMO_PROJECTS.includes(this.projectId)
-				|| !!url.searchParams.get('apiKey')
+			// Auth: the worker (src/index.ts) rejects any request without a VALID
+			// project API key before it reaches us, so a key present here is valid.
+			// Stored so REGISTER_PROXY/DS_QUERY can require it.
+			const authenticated = !!url.searchParams.get('apiKey')
 				|| !!request.headers.get('x-api-key');
 
 			// Attach metadata using serializeAttachment for hibernatable WebSockets
