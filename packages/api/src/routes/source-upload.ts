@@ -309,4 +309,55 @@ sourceUploadRouter.post("/signed-get", async (c) => {
   return c.json({ url: signed.url, expiresIn: DOWNLOAD_URL_TTL_SECONDS });
 });
 
+/**
+ * POST /upload/source-file/delete
+ * Remove a source file object from R2. Called when a data source is deleted or
+ * when its file is replaced (the old object would otherwise be orphaned).
+ *
+ * Uses the R2 binding directly (no presigning needed — the delete runs here on
+ * the worker, unlike PUT/GET which the browser/backend perform against R2).
+ *
+ * Auth: same dual mode as signed-get —
+ *   (a) internal service token via X-SA-Service-Token (backend → worker), or
+ *   (b) a normal Bearer JWT.
+ *
+ * Body: { key }
+ * Returns: { deleted: true }   (idempotent — succeeds even if the key is gone)
+ */
+sourceUploadRouter.post("/delete", async (c) => {
+  const serviceToken = c.req.header("X-SA-Service-Token");
+  const isService = !!serviceToken && serviceToken === c.env.SA_INTERNAL_SERVICE_TOKEN;
+
+  if (!isService) {
+    const authHeader = c.req.header("Authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : c.req.query("token");
+    if (!token) return c.json({ error: "Missing authorization" }, 401);
+    try {
+      const { jwtVerify } = await import("jose");
+      const secret = new TextEncoder().encode(c.env.JWT_SECRET);
+      await jwtVerify(token, secret);
+    } catch {
+      return c.json({ error: "Invalid or expired token" }, 401);
+    }
+  }
+
+  const body = await c.req.json<{ key: string }>().catch(() => null);
+  if (!body?.key) return c.json({ error: "key is required" }, 400);
+
+  // Confine deletion to source-file objects so a stray key can't target
+  // arbitrary objects in the bucket.
+  if (!body.key.startsWith("sources/")) {
+    return c.json({ error: "Invalid key: must be a source-file object" }, 400);
+  }
+
+  try {
+    await c.env.R2_SOURCE_FILES.delete(body.key);
+    console.log(`[source-upload] deleted key=${body.key}`);
+    return c.json({ deleted: true });
+  } catch (err: any) {
+    console.error("[source-upload] delete failed", err?.message || err, body.key);
+    return c.json({ error: `Delete failed: ${err?.message || String(err)}` }, 500);
+  }
+});
+
 export default sourceUploadRouter;

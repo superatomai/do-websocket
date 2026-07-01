@@ -9,6 +9,9 @@ enabled = true
 [[r2_buckets]]
 binding = "R2_BUCKET"
 bucket_name = "sa-assets"
+# LOCAL TESTING ONLY — do not commit. Lets `wrangler dev --remote` use the real
+# bucket. Remove before pushing.
+# preview_bucket_name = "sa-assets"
 
 # Private bucket for client-uploaded source files (Excel/CSV).
 # No public domain — all access mediated by signed URLs from this worker.
@@ -16,6 +19,9 @@ bucket_name = "sa-assets"
 [[r2_buckets]]
 binding = "R2_SOURCE_FILES"
 bucket_name = "sa-source-files"
+# LOCAL TESTING ONLY — do not commit. Must equal bucket_name because the upload
+# code hardcodes "sa-source-files" when presigning URLs. Remove before pushing.
+# preview_bucket_name = "sa-source-files"
 
 [vars]
 R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
