@@ -47,53 +47,62 @@ export default {
 			);
 		}
 
-		// Auth is REQUIRED for every connection (no fail-open, no demo bypass).
+		// Auth model: the per-project API key is a SERVER-SIDE credential. The
+		// server connection types (data-agent, db-bridge, admin) MUST present a
+		// valid key — no fail-open, no demo bypass. The browser 'runtime' type
+		// loads from a public bundle and cannot safely hold the secret, so it
+		// connects without one; the broadcaster still blocks unauthenticated
+		// sockets from the data plane (REGISTER_PROXY / DS_QUERY).
 		// API key can be passed via query param or header.
 		const apiKey = url.searchParams.get('apiKey') || request.headers.get('x-api-key');
+		const connectionType = url.searchParams.get('type');
+		const requiresApiKey = connectionType !== 'runtime';
 
-		// Reject connections that present no API key at all.
-		if (!apiKey) {
-			return new Response(
-				JSON.stringify({
-					error: 'Missing API key',
-					message:
-						'A per-project API key is required. Provide it via ?apiKey=sa_live_xxx or the x-api-key header.',
-					projectId,
-				}),
-				{
-					status: 401,
-					headers: { 'Content-Type': 'application/json' },
-				}
-			);
-		}
+		if (requiresApiKey) {
+			// Reject server-side connections that present no API key at all.
+			if (!apiKey) {
+				return new Response(
+					JSON.stringify({
+						error: 'Missing API key',
+						message:
+							'A per-project API key is required for this connection type. Provide it via ?apiKey=sa_live_xxx or the x-api-key header.',
+						projectId,
+					}),
+					{
+						status: 401,
+						headers: { 'Content-Type': 'application/json' },
+					}
+				);
+			}
 
-		// Validate the API key against the database
-		if (!env.DATABASE_URL) {
-			return new Response(
-				JSON.stringify({
-					error: 'Server configuration error',
-					message: 'DATABASE_URL is not configured',
-				}),
-				{
-					status: 500,
-					headers: { 'Content-Type': 'application/json' },
-				}
-			);
-		}
+			// Validate the API key against the database
+			if (!env.DATABASE_URL) {
+				return new Response(
+					JSON.stringify({
+						error: 'Server configuration error',
+						message: 'DATABASE_URL is not configured',
+					}),
+					{
+						status: 500,
+						headers: { 'Content-Type': 'application/json' },
+					}
+				);
+			}
 
-		const validationResult = await validateApiKey(env.DATABASE_URL, projectId, apiKey);
-		if (!validationResult.valid) {
-			return new Response(
-				JSON.stringify({
-					error: 'Invalid API key',
-					message: validationResult.error || 'API key validation failed',
-					projectId,
-				}),
-				{
-					status: 403,
-					headers: { 'Content-Type': 'application/json' },
-				}
-			);
+			const validationResult = await validateApiKey(env.DATABASE_URL, projectId, apiKey);
+			if (!validationResult.valid) {
+				return new Response(
+					JSON.stringify({
+						error: 'Invalid API key',
+						message: validationResult.error || 'API key validation failed',
+						projectId,
+					}),
+					{
+						status: 403,
+						headers: { 'Content-Type': 'application/json' },
+					}
+				);
+			}
 		}
 
 		try {
