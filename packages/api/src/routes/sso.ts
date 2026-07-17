@@ -365,7 +365,7 @@ sso.get("/callback", async (c) => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("7d")
+      .setExpirationTime("180d")
       .sign(secret);
 
     // Redirect to the frontend that initiated SSO with the token

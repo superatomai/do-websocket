@@ -43,15 +43,14 @@ async function withDbRetry<T>(
  */
 auth.post("/login", async (c) => {
   const db = c.get("db");
-  const { email, username, password, orgSlug } = await c.req.json<{
+  const { email, password, orgSlug } = await c.req.json<{
     email?: string;
-    username?: string;
     password: string;
     orgSlug?: string;
   }>();
 
-  if ((!email && !username) || !password) {
-    return c.json({ error: "Email or username, and password are required" }, 400);
+  if (!email || !password) {
+    return c.json({ error: "Email and password are required" }, 400);
   }
 
   // Hash the incoming password once for comparison
@@ -64,7 +63,7 @@ auth.post("/login", async (c) => {
   try {
     let matchedUsers: (typeof users.$inferSelect)[] = [];
 
-    if (email && orgSlug) {
+    if (orgSlug) {
       // Org-scoped lookup — email is unique per org
       const [org] = await withDbRetry("login:org-by-slug", () =>
         db
@@ -83,7 +82,7 @@ auth.post("/login", async (c) => {
           .limit(1)
       );
       if (found) matchedUsers = [found];
-    } else if (email) {
+    } else {
       // No org context — find all active users with this email across orgs
       matchedUsers = await withDbRetry("login:users-by-email", () =>
         db
@@ -91,16 +90,6 @@ auth.post("/login", async (c) => {
           .from(users)
           .where(and(eq(users.email, email), eq(users.isActive, true)))
       );
-    } else {
-      // Username is globally unique
-      const [found] = await withDbRetry("login:user-by-username", () =>
-        db
-          .select()
-          .from(users)
-          .where(and(eq(users.username, username!), eq(users.isActive, true)))
-          .limit(1)
-      );
-      if (found) matchedUsers = [found];
     }
 
     // Filter to users whose password matches
@@ -132,7 +121,7 @@ auth.post("/login", async (c) => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("7d")
+      .setExpirationTime("180d")
       .sign(secret);
 
     return c.json({
@@ -140,7 +129,6 @@ auth.post("/login", async (c) => {
       user: {
         id: user.id,
         email: user.email,
-        username: user.username,
         name: user.name,
         role: user.role,
         orgId: user.orgId,
@@ -188,7 +176,6 @@ auth.get("/me", authMiddleware, async (c) => {
       user: {
         id: user.id,
         email: user.email,
-        username: user.username,
         name: user.name,
         role: user.role,
       },
@@ -271,7 +258,6 @@ auth.get("/me", authMiddleware, async (c) => {
     user: {
       id: user.id,
       email: user.email,
-      username: user.username,
       name: user.name,
       role: user.role,
     },

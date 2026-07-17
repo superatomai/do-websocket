@@ -339,7 +339,7 @@ saml.post("/acs", async (c) => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("7d")
+      .setExpirationTime("180d")
       .sign(secret);
 
     // Redirect to frontend with token

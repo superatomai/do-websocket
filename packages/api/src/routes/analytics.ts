@@ -8,43 +8,58 @@ const analyticsRouter = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 /**
  * POST /analytics/chat
- * Ingest a chat analytics event (called by the SDK server-to-server, no auth required)
+ * Ingest an analytics event — chat, dashboard-agent, or report-generation
+ * usage, distinguished by `type` (called by the SDK server-to-server, no
+ * auth required). One ingest path for all three types rather than separate
+ * routes per type; `type` defaults to "chat_agent" when omitted so SDK builds
+ * that predate this field keep working unchanged.
  */
 analyticsRouter.post("/analytics/chat", async (c) => {
   const db = c.get("db");
   const body = await c.req.json<{
+    type?: "chat_agent" | "dashboard" | "report";
     userId: string;
     orgId?: string;
     projectId: string;
-    threadId: string;
-    messageIndex: number;
-    question: string;
+    threadId?: string;
+    messageIndex?: number;
+    question?: string;
     sourcesUsed?: { sourceId: string; sourceName: string; sourceType: string }[];
     sqlGenerated?: string;
+    // Dashboard/report identifier — null for chat_agent rows (chat has no
+    // per-message "app" concept to point at; see appId column comment).
+    appId?: string;
     model: string;
     inputTokens: number;
     outputTokens: number;
     cost: string; // numeric as string for precision
     latencyMs: number;
-    status: "success" | "error";
+    status: "success" | "error" | "aborted";
     errorMessage?: string;
   }>();
 
-  if (!body.userId || !body.projectId || !body.question || !body.model) {
-    return c.json({ error: "userId, projectId, question, and model are required" }, 400);
+  const type = body.type || "chat_agent";
+
+  if (!body.userId || !body.projectId || !body.model) {
+    return c.json({ error: "userId, projectId, and model are required" }, 400);
+  }
+  if (type === "chat_agent" && !body.question) {
+    return c.json({ error: "question is required for type=chat_agent" }, 400);
   }
 
   const [event] = await db
     .insert(chatAnalytics)
     .values({
+      type,
       userId: body.userId,
       orgId: body.orgId || null,
       projectId: body.projectId,
-      threadId: body.threadId,
-      messageIndex: body.messageIndex,
-      question: body.question,
+      threadId: body.threadId || null,
+      messageIndex: body.messageIndex ?? null,
+      question: body.question || null,
       sourcesUsed: body.sourcesUsed || null,
       sqlGenerated: body.sqlGenerated || null,
+      appId: body.appId || null,
       model: body.model,
       inputTokens: body.inputTokens,
       outputTokens: body.outputTokens,
@@ -85,23 +100,30 @@ analyticsRouter.patch("/analytics/chat/:id/feedback", async (c) => {
 });
 
 /**
- * GET /analytics/chat?orgId=&projectId=&from=&to=&userId=&limit=&offset=
- * Query chat analytics events (admin only)
+ * GET /analytics/chat?type=&orgId=&projectId=&from=&to=&userId=&limit=&offset=
+ * Query analytics events (admin only). `type` is one of "chat_agent" |
+ * "dashboard" | "report" | "all" — defaults to "chat_agent" when omitted so
+ * existing callers that predate dashboard/report tracking see the same rows
+ * they always have.
  */
 analyticsRouter.get("/analytics/chat", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
+  const type = c.req.query("type") || "chat_agent";
   const orgId = c.req.query("orgId") || c.get("orgId");
   const projectId = c.req.query("projectId");
   const userId = c.req.query("userId");
+  const status = c.req.query("status");
   const from = c.req.query("from");
   const to = c.req.query("to");
   const limit = Math.min(Number(c.req.query("limit") || 50), 200);
   const offset = Number(c.req.query("offset") || 0);
 
   const conditions = [];
+  if (type !== "all") conditions.push(eq(chatAnalytics.type, type as "chat_agent" | "dashboard" | "report"));
   if (orgId) conditions.push(eq(chatAnalytics.orgId, orgId));
   if (projectId) conditions.push(eq(chatAnalytics.projectId, projectId));
   if (userId) conditions.push(eq(chatAnalytics.userId, userId));
+  if (status && status !== "all") conditions.push(eq(chatAnalytics.status, status as "success" | "error" | "aborted"));
   if (from) conditions.push(gte(chatAnalytics.createdAt, new Date(from)));
   if (to) conditions.push(lte(chatAnalytics.createdAt, new Date(to)));
 
@@ -119,23 +141,43 @@ analyticsRouter.get("/analytics/chat", authMiddleware, adminOnly, async (c) => {
 });
 
 /**
- * GET /analytics/chat/summary?orgId=&projectId=&from=&to=
- * Aggregated summary: total queries, total cost, avg latency, model breakdown (admin only)
+ * GET /analytics/chat/summary?type=&orgId=&projectId=&from=&to=
+ * Aggregated summary: total queries, total cost, avg latency, model breakdown
+ * (admin only). Same `type` semantics as GET /analytics/chat above.
  */
 analyticsRouter.get("/analytics/chat/summary", authMiddleware, adminOnly, async (c) => {
   const db = c.get("db");
+  const type = c.req.query("type") || "chat_agent";
   const orgId = c.req.query("orgId") || c.get("orgId");
   const projectId = c.req.query("projectId");
   const from = c.req.query("from");
   const to = c.req.query("to");
 
-  const conditions = [];
-  if (orgId) conditions.push(eq(chatAnalytics.orgId, orgId));
-  if (projectId) conditions.push(eq(chatAnalytics.projectId, projectId));
-  if (from) conditions.push(gte(chatAnalytics.createdAt, new Date(from)));
-  if (to) conditions.push(lte(chatAnalytics.createdAt, new Date(to)));
+  // Scope filters (org/project/date) shared by every query below, kept
+  // separate from the `type` filter itself — `typeBreakdown` deliberately
+  // omits `type` from its own where-clause so it always reflects every type
+  // that actually has data in this scope, regardless of which type is
+  // currently selected.
+  const scopeConditions = [];
+  if (orgId) scopeConditions.push(eq(chatAnalytics.orgId, orgId));
+  if (projectId) scopeConditions.push(eq(chatAnalytics.projectId, projectId));
+  if (from) scopeConditions.push(gte(chatAnalytics.createdAt, new Date(from)));
+  if (to) scopeConditions.push(lte(chatAnalytics.createdAt, new Date(to)));
 
+  const conditions = [...scopeConditions];
+  if (type !== "all") conditions.push(eq(chatAnalytics.type, type as "chat_agent" | "dashboard" | "report"));
   const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const whereWithoutType = scopeConditions.length > 0 ? and(...scopeConditions) : undefined;
+  const typeBreakdown = await db
+    .select({
+      type: chatAnalytics.type,
+      queryCount: count(),
+    })
+    .from(chatAnalytics)
+    .where(whereWithoutType)
+    .groupBy(chatAnalytics.type)
+    .orderBy(desc(count()));
 
   // Overall summary
   const [overall] = await db
@@ -189,6 +231,7 @@ analyticsRouter.get("/analytics/chat/summary", authMiddleware, adminOnly, async 
     overall,
     modelBreakdown,
     userBreakdown,
+    typeBreakdown,
   });
 });
 

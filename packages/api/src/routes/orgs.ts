@@ -75,7 +75,6 @@ orgs.post("/", authMiddleware, superAdminOnly, async (c) => {
       .values({
         orgId: org.id,
         email: admin.email,
-        username: admin.email.split("@")[0],
         name: admin.name,
         passwordHash,
         role: "org_admin",
@@ -84,7 +83,6 @@ orgs.post("/", authMiddleware, superAdminOnly, async (c) => {
       .returning({
         id: users.id,
         email: users.email,
-        username: users.username,
         name: users.name,
         role: users.role,
       });

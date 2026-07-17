@@ -54,7 +54,6 @@ bootstrap.post("/bootstrap", async (c) => {
     .values({
       orgId: null,
       email: body.email,
-      username: body.email.split("@")[0],
       name: body.name,
       passwordHash,
       role: "super_admin",
@@ -63,7 +62,6 @@ bootstrap.post("/bootstrap", async (c) => {
     .returning({
       id: users.id,
       email: users.email,
-      username: users.username,
       name: users.name,
       role: users.role,
     });

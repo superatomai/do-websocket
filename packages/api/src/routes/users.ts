@@ -27,16 +27,15 @@ async function hashPassword(password: string): Promise<string> {
 usersRouter.post("/", async (c) => {
   const db = c.get("db");
   const orgId = c.req.param("orgId")!;
-  const { email, username, name, password, role } = await c.req.json<{
+  const { email, name, password, role } = await c.req.json<{
     email: string;
-    username: string;
     name: string;
     password: string;
     role?: "super_admin" | "org_admin" | "member";
   }>();
 
-  if (!email || !username || !name || !password) {
-    return c.json({ error: "email, username, name, and password are required" }, 400);
+  if (!email || !name || !password) {
+    return c.json({ error: "email, name, and password are required" }, 400);
   }
 
   // Nobody should create super_admin via this endpoint
@@ -58,42 +57,22 @@ usersRouter.post("/", async (c) => {
 
   if (existing) {
     if (!existing.isActive) {
-      // Only check username conflict if the new username differs from the user's own
-      if (username !== existing.username) {
-        const [usernameConflict] = await db
-          .select({ id: users.id })
-          .from(users)
-          .where(and(sql`lower(${users.username}) = lower(${username})`, eq(users.orgId, orgId)))
-          .limit(1);
-        if (usernameConflict) {
-          return c.json({ error: "Username is already taken by another user in this organization" }, 409);
-        }
-      }
-
       // Reactivate with new credentials
-      try {
-        const passwordHash = await hashPassword(password);
-        const [reactivated] = await db
-          .update(users)
-          .set({ username, name, passwordHash, role: role || "member", isActive: true, updatedAt: new Date() })
-          .where(eq(users.id, existing.id))
-          .returning({
-            id: users.id,
-            orgId: users.orgId,
-            email: users.email,
-            username: users.username,
-            name: users.name,
-            role: users.role,
-            isActive: users.isActive,
-            createdAt: users.createdAt,
-          });
-        return c.json(reactivated, 200);
-      } catch (err: any) {
-        if (err?.code === "23505") {
-          return c.json({ error: "Username is already taken by another user in this organization" }, 409);
-        }
-        throw err;
-      }
+      const passwordHash = await hashPassword(password);
+      const [reactivated] = await db
+        .update(users)
+        .set({ name, passwordHash, role: role || "member", isActive: true, updatedAt: new Date() })
+        .where(eq(users.id, existing.id))
+        .returning({
+          id: users.id,
+          orgId: users.orgId,
+          email: users.email,
+          name: users.name,
+          role: users.role,
+          isActive: users.isActive,
+          createdAt: users.createdAt,
+        });
+      return c.json(reactivated, 200);
     }
     return c.json({ error: "A user with this email already exists in this organization" }, 409);
   }
@@ -105,7 +84,6 @@ usersRouter.post("/", async (c) => {
     .values({
       orgId,
       email,
-      username,
       name,
       passwordHash,
       role: role || "member",
@@ -114,7 +92,6 @@ usersRouter.post("/", async (c) => {
       id: users.id,
       orgId: users.orgId,
       email: users.email,
-      username: users.username,
       name: users.name,
       role: users.role,
       isActive: users.isActive,
@@ -136,7 +113,6 @@ usersRouter.get("/", async (c) => {
     .select({
       id: users.id,
       email: users.email,
-      username: users.username,
       name: users.name,
       role: users.role,
       isActive: users.isActive,
@@ -160,7 +136,6 @@ usersRouter.get("/:userId", async (c) => {
     .select({
       id: users.id,
       email: users.email,
-      username: users.username,
       name: users.name,
       role: users.role,
       isActive: users.isActive,
@@ -198,7 +173,6 @@ usersRouter.put("/:userId", async (c) => {
   const db = c.get("db");
   const userId = c.req.param("userId");
   const body = await c.req.json<{
-    username?: string;
     name?: string;
     role?: "org_admin" | "member";
     isActive?: boolean;
@@ -216,7 +190,6 @@ usersRouter.put("/:userId", async (c) => {
     .returning({
       id: users.id,
       email: users.email,
-      username: users.username,
       name: users.name,
       role: users.role,
       isActive: users.isActive,

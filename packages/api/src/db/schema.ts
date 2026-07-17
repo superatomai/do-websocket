@@ -64,7 +64,6 @@ export const users = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
     email: varchar("email", { length: 255 }).notNull(),
-    username: varchar("username", { length: 100 }),
     name: varchar("name", { length: 255 }).notNull(),
     passwordHash: varchar("password_hash", { length: 255 }),
     ssoSubject: varchar("sso_subject", { length: 500 }),
@@ -75,7 +74,6 @@ export const users = pgTable(
   },
   (table) => [
     uniqueIndex("users_org_email_idx").on(table.orgId, table.email),
-    uniqueIndex("users_org_username_idx").on(table.orgId, table.username),
     uniqueIndex("users_org_sso_subject_idx").on(table.orgId, table.ssoSubject),
   ]
 );
@@ -267,6 +265,20 @@ export const ssoConfigsRelations = relations(ssoConfigs, ({ one }) => ({
 export const analyticsStatusEnum = pgEnum("analytics_status", [
   "success",
   "error",
+  "aborted",
+]);
+
+// One row shape covers chat, dashboard-agent, and report-generation usage —
+// `type` is the discriminator; the fields specific to one type (threadId/
+// messageIndex/question for chat, appId for dashboard/report) are nullable
+// and only populated for their own type. Kept as one table with one
+// ingest/query path rather than per-type tables so all three can be
+// queried/filtered together via a single `type` param instead of juggling
+// separate endpoints.
+export const analyticsTypeEnum = pgEnum("analytics_type", [
+  "chat_agent",
+  "dashboard",
+  "report",
 ]);
 
 // ─── Chat Analytics ─────────────────────────────────────
@@ -275,6 +287,7 @@ export const chatAnalytics = pgTable(
   "chat_analytics",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    type: analyticsTypeEnum("type").notNull().default("chat_agent"),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -283,11 +296,18 @@ export const chatAnalytics = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
-    threadId: varchar("thread_id", { length: 255 }).notNull(),
-    messageIndex: integer("message_index").notNull(),
-    question: text("question").notNull(),
+    // Chat-only grouping fields — null for dashboard/report rows, which group
+    // by appId instead (see below).
+    threadId: varchar("thread_id", { length: 255 }),
+    messageIndex: integer("message_index"),
+    question: text("question"),
     sourcesUsed: jsonb("sources_used"), // [{ sourceId, sourceName, sourceType }]
     sqlGenerated: text("sql_generated"),
+    // Dashboard-agent / report-generation identifier — null for chat rows.
+    // One column for both, not separate dashboardId/reportId, since both are
+    // just "apps" (see appTypeEnum above — dashboard/report/chat_agent/app
+    // are all app types already).
+    appId: varchar("app_id", { length: 255 }),
     model: varchar("model", { length: 255 }).notNull(),
     inputTokens: integer("input_tokens").notNull(),
     outputTokens: integer("output_tokens").notNull(),
@@ -299,6 +319,8 @@ export const chatAnalytics = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    index("chat_analytics_type_idx").on(table.type),
+    index("chat_analytics_app_id_idx").on(table.appId),
     index("chat_analytics_user_id_idx").on(table.userId),
     index("chat_analytics_org_id_idx").on(table.orgId),
     index("chat_analytics_project_id_idx").on(table.projectId),
