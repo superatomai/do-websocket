@@ -308,6 +308,11 @@ export const chatAnalytics = pgTable(
     // just "apps" (see appTypeEnum above — dashboard/report/chat_agent/app
     // are all app types already).
     appId: varchar("app_id", { length: 255 }),
+    // Row id of the saved conversation in the main backend's OWN Postgres
+    // (user_conversations / dashboard_agent_conversations / reports_conversations
+    // — a different database this service has no connection to, hence no FK).
+    // Nullable/optional: older SDK versions won't send it.
+    conversationId: integer("conversation_id"),
     model: varchar("model", { length: 255 }).notNull(),
     inputTokens: integer("input_tokens").notNull(),
     outputTokens: integer("output_tokens").notNull(),
@@ -321,6 +326,7 @@ export const chatAnalytics = pgTable(
   (table) => [
     index("chat_analytics_type_idx").on(table.type),
     index("chat_analytics_app_id_idx").on(table.appId),
+    index("chat_analytics_conversation_id_idx").on(table.conversationId),
     index("chat_analytics_user_id_idx").on(table.userId),
     index("chat_analytics_org_id_idx").on(table.orgId),
     index("chat_analytics_project_id_idx").on(table.projectId),

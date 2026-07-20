@@ -29,6 +29,10 @@ analyticsRouter.post("/analytics/chat", async (c) => {
     // Dashboard/report identifier — null for chat_agent rows (chat has no
     // per-message "app" concept to point at; see appId column comment).
     appId?: string;
+    // Row id of the saved conversation in the main backend's own Postgres
+    // (user_conversations / dashboard_agent_conversations / reports_conversations).
+    // Optional — older SDK versions won't send it.
+    conversationId?: number;
     model: string;
     inputTokens: number;
     outputTokens: number;
@@ -60,6 +64,7 @@ analyticsRouter.post("/analytics/chat", async (c) => {
       sourcesUsed: body.sourcesUsed || null,
       sqlGenerated: body.sqlGenerated || null,
       appId: body.appId || null,
+      conversationId: body.conversationId ?? null,
       model: body.model,
       inputTokens: body.inputTokens,
       outputTokens: body.outputTokens,
@@ -68,9 +73,9 @@ analyticsRouter.post("/analytics/chat", async (c) => {
       status: body.status,
       errorMessage: body.errorMessage || null,
     })
-    .returning({ id: chatAnalytics.id });
+    .returning({ id: chatAnalytics.id, conversationId: chatAnalytics.conversationId });
 
-  return c.json({ success: true, id: event.id }, 201);
+  return c.json({ success: true, id: event.id, conversationId: event.conversationId }, 201);
 });
 
 /**
