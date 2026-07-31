@@ -15,6 +15,13 @@ export type Env = {
   R2_SECRET_ACCESS_KEY: string;
   // Shared secret for backend → worker service calls (e.g. /upload/source-file/signed-get).
   SA_INTERNAL_SERVICE_TOKEN: string;
+  // Voice input (speech-to-text) — see docs/SPEECH-TO-TEXT-DESIGN.md.
+  OPENROUTER_API_KEY: string;
+  SPEECH_RATE_LIMITER: RateLimit;
+  // "true" → run the optional vocabulary-correction pass (§4.3 of the design
+  // doc). Leave unset until live testing shows the recognizer-side biasing
+  // (provider.options.google.prompt) is not honored.
+  SPEECH_CORRECT_TERMS?: string;
 };
 
 export type AppVariables = {

@@ -26,6 +26,13 @@ bucket_name = "sa-source-files"
 [vars]
 R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
 
+# Per-user voice rate limit (docs/SPEECH-TO-TEXT-DESIGN.md §3.4). period must be 10 or 60.
+[[unsafe.bindings]]
+name = "SPEECH_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "2001"
+simple = { limit = 20, period = 60 }
+
 # Environment variables (set via wrangler secret or dashboard)
 # These should be set as secrets, not in this file:
 #   wrangler secret put DATABASE_URL
@@ -34,6 +41,7 @@ R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
 #   wrangler secret put R2_ACCESS_KEY_ID         # R2 API token (S3-compatible) — for presigning multipart URLs
 #   wrangler secret put R2_SECRET_ACCESS_KEY     # R2 API token secret
 #   wrangler secret put SA_INTERNAL_SERVICE_TOKEN # shared secret for backend → worker calls (e.g. /signed-get)
+#   wrangler secret put OPENROUTER_API_KEY       # voice transcription
 #
 # DATABASE_URL: Prod Neon PostgreSQL connection string
 # JWT_SECRET: Secret key for signing/verifying JWTs

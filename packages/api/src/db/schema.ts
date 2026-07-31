@@ -350,3 +350,32 @@ export const chatAnalyticsRelations = relations(chatAnalytics, ({ one }) => ({
     references: [projects.id],
   }),
 }));
+
+// ─── Speech (voice input) Usage ──────────────────────────
+//
+// Deliberately no FK references (unlike chatAnalytics above) — this is a
+// best-effort metering log (see logUsage() in routes/speech.ts, which never
+// blocks or fails the user's transcription on an insert error) and must
+// never itself fail because a referenced org/user/project row is missing.
+
+export const speechUsage = pgTable(
+  "speech_usage",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orgId: varchar("org_id", { length: 255 }),
+    userId: varchar("user_id", { length: 255 }),
+    projectId: varchar("project_id", { length: 255 }),
+    model: varchar("model", { length: 128 }).notNull(),
+    audioBytes: integer("audio_bytes").notNull(),
+    audioSeconds: numeric("audio_seconds"),
+    cost: numeric("cost"),
+    latencyMs: integer("latency_ms"),
+    ok: boolean("ok").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("speech_usage_org_id_idx").on(table.orgId),
+    index("speech_usage_user_id_idx").on(table.userId),
+    index("speech_usage_created_at_idx").on(table.createdAt),
+  ]
+);

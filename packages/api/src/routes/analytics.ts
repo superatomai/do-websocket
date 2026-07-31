@@ -145,24 +145,15 @@ analyticsRouter.get("/analytics/chat", authMiddleware, adminOnly, async (c) => {
   return c.json(events);
 });
 
-/**
- * GET /analytics/chat/summary?type=&orgId=&projectId=&from=&to=
- * Aggregated summary: total queries, total cost, avg latency, model breakdown
- * (admin only). Same `type` semantics as GET /analytics/chat above.
- */
-analyticsRouter.get("/analytics/chat/summary", authMiddleware, adminOnly, async (c) => {
-  const db = c.get("db");
+// Shared by /summary and /trends — same org/project/date/type scoping logic,
+// so both routes filter identically without duplicating the condition-building.
+function parseScopeParams(c: any) {
   const type = c.req.query("type") || "chat_agent";
   const orgId = c.req.query("orgId") || c.get("orgId");
   const projectId = c.req.query("projectId");
   const from = c.req.query("from");
   const to = c.req.query("to");
 
-  // Scope filters (org/project/date) shared by every query below, kept
-  // separate from the `type` filter itself — `typeBreakdown` deliberately
-  // omits `type` from its own where-clause so it always reflects every type
-  // that actually has data in this scope, regardless of which type is
-  // currently selected.
   const scopeConditions = [];
   if (orgId) scopeConditions.push(eq(chatAnalytics.orgId, orgId));
   if (projectId) scopeConditions.push(eq(chatAnalytics.projectId, projectId));
@@ -171,9 +162,26 @@ analyticsRouter.get("/analytics/chat/summary", authMiddleware, adminOnly, async 
 
   const conditions = [...scopeConditions];
   if (type !== "all") conditions.push(eq(chatAnalytics.type, type as "chat_agent" | "dashboard" | "report"));
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const whereWithoutType = scopeConditions.length > 0 ? and(...scopeConditions) : undefined;
+  return {
+    type, orgId, projectId, from, to,
+    where: conditions.length > 0 ? and(...conditions) : undefined,
+    whereWithoutType: scopeConditions.length > 0 ? and(...scopeConditions) : undefined,
+  };
+}
+
+/**
+ * GET /analytics/chat/summary?type=&orgId=&projectId=&from=&to=
+ * Aggregated summary: total queries, total cost, avg latency, model breakdown
+ * (admin only). Same `type` semantics as GET /analytics/chat above.
+ */
+analyticsRouter.get("/analytics/chat/summary", authMiddleware, adminOnly, async (c) => {
+  const db = c.get("db");
+  const { where, whereWithoutType } = parseScopeParams(c);
+
+  // typeBreakdown deliberately omits `type` from its own where-clause so it
+  // always reflects every type that has data in this scope, regardless of
+  // which type is currently selected.
   const typeBreakdown = await db
     .select({
       type: chatAnalytics.type,
@@ -238,6 +246,56 @@ analyticsRouter.get("/analytics/chat/summary", authMiddleware, adminOnly, async 
     userBreakdown,
     typeBreakdown,
   });
+});
+
+// Widest allowed span between `from` and `to` — dailyBreakdown returns one row
+// per day, so an unbounded range is an unbounded response. 366 covers a full
+// year (leap-safe); anything wider gets rejected rather than silently huge.
+const MAX_TRENDS_SPAN_DAYS = 366;
+
+/**
+ * GET /analytics/chat/trends?type=&orgId=&projectId=&from=&to=
+ * Per-day and per-status breakdowns for trend/outcome charts (admin only).
+ * Split out from /summary because callers scope this differently (e.g. a
+ * fixed last-30-days window vs. whatever date range /summary is filtered
+ * to) — bundling them would mean every call computes aggregates it doesn't
+ * use. Same `type` semantics as GET /analytics/chat above.
+ */
+analyticsRouter.get("/analytics/chat/trends", authMiddleware, adminOnly, async (c) => {
+  const db = c.get("db");
+  const { where, from, to } = parseScopeParams(c);
+
+  if (from && to) {
+    const spanDays = (new Date(to).getTime() - new Date(from).getTime()) / 86400000;
+    if (spanDays > MAX_TRENDS_SPAN_DAYS) {
+      return c.json({ error: `from/to span too wide — max ${MAX_TRENDS_SPAN_DAYS} days` }, 400);
+    }
+  }
+
+  // Aggregated server-side (not raw rows bucketed client-side — GET
+  // /analytics/chat caps limit at 200, which would drop older days once
+  // volume passes that). UTC day buckets to match createdAt's storage.
+  const dailyBreakdown = await db
+    .select({
+      date: sql<string>`to_char(${chatAnalytics.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`,
+      queryCount: count(),
+    })
+    .from(chatAnalytics)
+    .where(where)
+    .groupBy(sql`to_char(${chatAnalytics.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`)
+    .orderBy(sql`to_char(${chatAnalytics.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`);
+
+  const statusBreakdown = await db
+    .select({
+      status: chatAnalytics.status,
+      queryCount: count(),
+    })
+    .from(chatAnalytics)
+    .where(where)
+    .groupBy(chatAnalytics.status)
+    .orderBy(desc(count()));
+
+  return c.json({ dailyBreakdown, statusBreakdown });
 });
 
 export default analyticsRouter;
