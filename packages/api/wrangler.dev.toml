@@ -8,17 +8,40 @@ enabled = true
 
 [[r2_buckets]]
 binding = "R2_BUCKET"
-bucket_name = "sa-assets"
+bucket_name = "sa-assets-dev"
+
+# Private bucket for client-uploaded source files (Excel/CSV) — isolated from prod.
+[[r2_buckets]]
+binding = "R2_SOURCE_FILES"
+bucket_name = "sa-source-files-dev"
 
 [vars]
-R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
+R2_PUBLIC_URL = "https://sa-assets-dev.superatom.ai"
+R2_SOURCE_FILES_BUCKET_NAME = "sa-source-files-dev"
+
+# Per-user voice rate limit (docs/SPEECH-TO-TEXT-DESIGN.md §3.4). period must be 10 or 60.
+[[unsafe.bindings]]
+name = "SPEECH_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "2001"
+simple = { limit = 20, period = 60 }
 
 # Secrets (set once, then managed via Cloudflare dashboard or wrangler):
 #   pnpm wrangler secret put DATABASE_URL --config wrangler.dev.toml
 #   pnpm wrangler secret put JWT_SECRET --config wrangler.dev.toml
+#   pnpm wrangler secret put R2_ACCOUNT_ID --config wrangler.dev.toml
+#   pnpm wrangler secret put R2_ACCESS_KEY_ID --config wrangler.dev.toml
+#   pnpm wrangler secret put R2_SECRET_ACCESS_KEY --config wrangler.dev.toml
+#   pnpm wrangler secret put SA_INTERNAL_SERVICE_TOKEN --config wrangler.dev.toml
+#   pnpm wrangler secret put OPENROUTER_API_KEY --config wrangler.dev.toml
 #
 # DATABASE_URL: Dev Neon PostgreSQL connection string
 # JWT_SECRET: A fresh random secret (different from prod)
+# R2_ACCOUNT_ID: Cloudflare account id, used to derive R2 S3 endpoint
+# R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY: R2 API token scoped to sa-assets-dev
+#   and sa-source-files-dev only (not prod's buckets) — used to presign multipart URLs
+# SA_INTERNAL_SERVICE_TOKEN: shared secret for backend → worker calls (e.g. /signed-get)
+# OPENROUTER_API_KEY: voice transcription — needed if testing /speech routes in dev
 #
 # Deploy:
 #   pnpm wrangler deploy --config wrangler.dev.toml

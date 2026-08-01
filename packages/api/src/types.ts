@@ -8,6 +8,10 @@ export type Env = {
   R2_PUBLIC_URL: string; // e.g. "https://sa-assets.superatom.ai" or "https://pub-xxx.r2.dev"
   // Private bucket for client-uploaded source files (Excel/CSV).
   R2_SOURCE_FILES: R2Bucket;
+  // Must match R2_SOURCE_FILES's actual bucket_name — the R2 binding API has no
+  // getSignedUrl(), so presigned URLs are built by hand against the S3-compatible
+  // endpoint and need the bucket name as a plain string.
+  R2_SOURCE_FILES_BUCKET_NAME: string;
   // R2 S3-compatible API credentials — used by aws4fetch to presign URLs
   // that the worker binding API can't generate natively.
   R2_ACCOUNT_ID: string;
