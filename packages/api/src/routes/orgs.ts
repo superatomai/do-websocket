@@ -133,9 +133,43 @@ orgs.put("/:orgId", authMiddleware, adminOnly, orgScopeGuard, async (c) => {
   const orgId = c.req.param("orgId");
   const body = await c.req.json<{ name?: string; slug?: string; icon?: string; defaultAppId?: string | null }>();
 
+  // Explicit allowlist rather than spreading the body: a spread lets a caller
+  // set any column on `organizations`, including `id` and `createdAt`. Unknown
+  // keys are ignored, so a column added later is not exposed by default.
+  const updates: {
+    name?: string;
+    slug?: string;
+    icon?: string;
+    defaultAppId?: string | null;
+    updatedAt: Date;
+  } = { updatedAt: new Date() };
+
+  if (body.name !== undefined) {
+    if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 255) {
+      return c.json({ error: "Invalid name" }, 400);
+    }
+    updates.name = body.name;
+  }
+  if (body.slug !== undefined) {
+    if (typeof body.slug !== "string" || !body.slug.trim() || body.slug.length > 100) {
+      return c.json({ error: "Invalid slug" }, 400);
+    }
+    updates.slug = body.slug;
+  }
+  if (body.icon !== undefined) {
+    if (typeof body.icon !== "string") return c.json({ error: "Invalid icon" }, 400);
+    updates.icon = body.icon;
+  }
+  if (body.defaultAppId !== undefined) {
+    if (body.defaultAppId !== null && typeof body.defaultAppId !== "string") {
+      return c.json({ error: "Invalid defaultAppId" }, 400);
+    }
+    updates.defaultAppId = body.defaultAppId;
+  }
+
   const [updated] = await db
     .update(organizations)
-    .set({ ...body, updatedAt: new Date() })
+    .set(updates)
     .where(eq(organizations.id, orgId))
     .returning();
 

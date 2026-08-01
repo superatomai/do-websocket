@@ -42,7 +42,7 @@ export function getKeyPrefix(apiKey: string): string {
 /**
  * Execute a query against Neon PostgreSQL using the HTTP API
  */
-async function executeQuery<T>(
+export async function executeQuery<T>(
     connectionString: string,
     query: string,
     params: any[] = []

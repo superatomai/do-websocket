@@ -9,6 +9,10 @@ import {
   buildAuthnRequest,
   deflateAndEncode,
 } from "../lib/saml";
+import { isAllowedRedirect } from "../lib/origins";
+import { ACCESS_TOKEN_TTL } from "../lib/access-token";
+import { issueRefreshToken } from "../lib/refresh-tokens";
+import { setRefreshCookie } from "../lib/refresh-cookie";
 
 const sso = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -121,6 +125,15 @@ sso.get("/authorize", async (c) => {
 
   if (!orgSlug) {
     return c.json({ error: "org_slug query parameter is required" }, 400);
+  }
+
+  // Reject a hostile redirect target before any IdP round-trip. This is not a
+  // plain open redirect: the callback appends the session token to this URL
+  // (`?token=<jwt>`), so an unvalidated value hands a fully authenticated
+  // session to whoever controls the destination — after the victim completes a
+  // genuine login at their real IdP.
+  if (redirectTo && !isAllowedRedirect(redirectTo, c.env)) {
+    return c.json({ error: "redirect_to is not an allowed URL" }, 400);
   }
 
   // Look up org by slug
@@ -241,8 +254,13 @@ sso.get("/callback", async (c) => {
     // Verify state token to recover orgId, nonce, and redirectTo
     const { orgId, nonce, redirectTo } = await verifyStateToken(state, c.env.JWT_SECRET);
 
-    // Use the redirect URL from the state token, or fall back to PLATFORM_UI_URL + /sso-callback
-    const frontendCallbackUrl = redirectTo || `${fallbackUrl}/sso-callback`;
+    // Re-validate on the way out as well as on the way in. The state token is
+    // signed, which proves WE minted it — not that its contents are safe, since
+    // the value came from a query parameter in the first place. Re-checking here
+    // makes any state token already issued with a hostile URL inert.
+    const safeRedirectTo =
+      redirectTo && isAllowedRedirect(redirectTo, c.env) ? redirectTo : null;
+    const frontendCallbackUrl = safeRedirectTo || `${fallbackUrl}/sso-callback`;
 
     // Look up SSO config for this org
     const [config] = await db
@@ -365,8 +383,16 @@ sso.get("/callback", async (c) => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("180d")
+      .setExpirationTime(ACCESS_TOKEN_TTL)
       .sign(secret);
+
+    // The refresh token goes in an httpOnly cookie; only the 15-minute access
+    // token travels in the URL. That bounds the damage if this redirect leaks
+    // into browser history or an access log.
+    const refresh = await issueRefreshToken(db, user.id, {
+      userAgent: c.req.header("User-Agent"),
+    });
+    setRefreshCookie(c, refresh.token);
 
     // Redirect to the frontend that initiated SSO with the token
     return c.redirect(`${frontendCallbackUrl}?token=${saToken}`);

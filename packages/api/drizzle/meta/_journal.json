@@ -15,6 +15,20 @@
       "when": 1785468363068,
       "tag": "0001_add_speech_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785507408726,
+      "tag": "0002_cloudy_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785572791419,
+      "tag": "0003_parched_zodiak",
+      "breakpoints": true
     }
   ]
 }

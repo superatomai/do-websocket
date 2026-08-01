@@ -1,9 +1,19 @@
 import { Hono } from "hono";
 import { eq, and, inArray } from "drizzle-orm";
-import { SignJWT } from "jose";
 import { users, organizations, appPermissions, apps, projects } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware } from "../middleware/auth";
+import { mintAccessToken } from "../lib/access-token";
+import {
+  issueRefreshToken,
+  rotateRefreshToken,
+  revokeAllForUser,
+} from "../lib/refresh-tokens";
+import {
+  setRefreshCookie,
+  readRefreshCookie,
+  clearRefreshCookie,
+} from "../lib/refresh-cookie";
 
 const auth = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -112,17 +122,14 @@ auth.post("/login", async (c) => {
         )
       : [];
 
-    // Sign JWT for the first matched user
-    const secret = new TextEncoder().encode(c.env.JWT_SECRET);
-    const token = await new SignJWT({
-      userId: user.id,
-      orgId: user.orgId,
-      role: user.role,
-    })
-      .setProtectedHeader({ alg: "HS256" })
-      .setIssuedAt()
-      .setExpirationTime("180d")
-      .sign(secret);
+    // Short-lived access token (15m) plus a rotating refresh token held in an
+    // httpOnly cookie — see lib/access-token.ts and lib/refresh-cookie.ts.
+    const token = await mintAccessToken(user, c.env.JWT_SECRET);
+
+    const refresh = await issueRefreshToken(db, user.id, {
+      userAgent: c.req.header("User-Agent"),
+    });
+    setRefreshCookie(c, refresh.token);
 
     return c.json({
       token,
@@ -146,10 +153,100 @@ auth.post("/login", async (c) => {
 
 /**
  * POST /auth/logout
- * Client-side logout — just acknowledge (JWT is stateless)
+ * Revokes every token issued to this user up to now.
+ *
+ * A JWT stays cryptographically valid until it expires, so clearing it from
+ * localStorage only makes the browser forget it — anyone holding a copy could
+ * keep using it for the remainder of its lifetime. Stamping a cutoff on the user
+ * row lets authMiddleware reject tokens issued before it, which is what actually
+ * ends the session.
+ *
+ * Truncated to whole seconds because `iat` has second granularity: a fresh login
+ * in the same second as a logout must not be rejected as stale.
  */
 auth.post("/logout", authMiddleware, async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+
+  const cutoff = new Date(Math.floor(Date.now() / 1000) * 1000);
+
+  try {
+    await db
+      .update(users)
+      .set({ tokensValidAfter: cutoff, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+
+    // Kill the refresh side too. Without this the access token would die at the
+    // cutoff but the cookie could still mint new ones, so logout would not stick.
+    await revokeAllForUser(db, userId);
+  } catch (error) {
+    console.error("[auth] logout revocation failed:", error);
+    // Surface the failure: reporting success would leave the caller believing
+    // the session was ended when the token is still usable.
+    return c.json({ error: "Logout failed, please try again" }, 503);
+  }
+
+  clearRefreshCookie(c);
+
   return c.json({ message: "Logged out successfully" });
+});
+
+/**
+ * POST /auth/refresh
+ * Exchange the refresh cookie for a new access token, rotating the cookie.
+ *
+ * Deliberately NOT behind authMiddleware: the whole point is that it works when
+ * the access token has expired. The refresh cookie is the credential here.
+ *
+ * CSRF is covered by SameSite=Lax, which stops another site POSTing here with
+ * the cookie attached. The response carries only the access token; the refresh
+ * token never becomes readable by JavaScript.
+ */
+auth.post("/refresh", async (c) => {
+  const db = c.get("db");
+  const presented = readRefreshCookie(c);
+
+  if (!presented) {
+    return c.json({ error: "No refresh token" }, 401);
+  }
+
+  const result = await rotateRefreshToken(db, presented, c.req.header("User-Agent"));
+
+  if (!result.ok) {
+    // Any failure clears the cookie so the browser stops replaying a dead token.
+    clearRefreshCookie(c);
+    const message =
+      result.reason === "reuse_detected"
+        ? "Session revoked, please sign in again"
+        : "Session expired, please sign in again";
+    return c.json({ error: message }, 401);
+  }
+
+  // Re-read the user: role, active status and the logout cutoff must all be
+  // re-checked here, or refresh would become a way to keep minting tokens for a
+  // deactivated or demoted account.
+  const [user] = await db
+    .select({
+      id: users.id,
+      orgId: users.orgId,
+      role: users.role,
+      isActive: users.isActive,
+      tokensValidAfter: users.tokensValidAfter,
+    })
+    .from(users)
+    .where(eq(users.id, result.userId))
+    .limit(1);
+
+  if (!user || !user.isActive) {
+    await revokeAllForUser(db, result.userId);
+    clearRefreshCookie(c);
+    return c.json({ error: "Account is not active" }, 401);
+  }
+
+  setRefreshCookie(c, result.token);
+  const token = await mintAccessToken(user, c.env.JWT_SECRET);
+
+  return c.json({ token });
 });
 
 /**

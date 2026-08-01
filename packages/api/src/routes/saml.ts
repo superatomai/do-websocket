@@ -13,6 +13,10 @@ import {
   SamlError,
 } from "../lib/saml";
 import { authMiddleware, adminOnly } from "../middleware/auth";
+import { isAllowedRedirect } from "../lib/origins";
+import { ACCESS_TOKEN_TTL } from "../lib/access-token";
+import { issueRefreshToken } from "../lib/refresh-tokens";
+import { setRefreshCookie } from "../lib/refresh-cookie";
 import { DOMParser } from"@xmldom/xmldom";
 
 
@@ -99,6 +103,14 @@ saml.get("/login", async (c) => {
 
   if (!orgSlug) {
     return c.json({ error: "org_slug query parameter is required" }, 400);
+  }
+
+  // Reject a hostile redirect target before the IdP round-trip — the ACS
+  // handler appends the session token to this URL. Only affects the
+  // SP-initiated flow; IdP-initiated logins carry no RelayState and never
+  // reach this route.
+  if (redirectTo && !isAllowedRedirect(redirectTo, c.env)) {
+    return c.json({ error: "redirect_to is not an allowed URL" }, 400);
   }
 
   // Look up org
@@ -209,7 +221,10 @@ saml.post("/acs", async (c) => {
         const stateData = await verifySamlStateToken(relayState, c.env.JWT_SECRET);
         orgId = stateData.orgId;
         expectedRequestId = stateData.requestId;
-        if (stateData.redirectTo) {
+        // Re-validate: a signed RelayState proves WE minted it, not that its
+        // contents are safe — the value originally came from a query parameter.
+        // Anything not allowlisted falls back to the platform URL.
+        if (stateData.redirectTo && isAllowedRedirect(stateData.redirectTo, c.env)) {
           errorRedirectUrl = stateData.redirectTo;
         }
       } catch {
@@ -339,8 +354,16 @@ saml.post("/acs", async (c) => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("180d")
+      .setExpirationTime(ACCESS_TOKEN_TTL)
       .sign(secret);
+
+    // Refresh token in an httpOnly cookie; only the 15-minute access token goes
+    // in the URL below. Applies to both the SP-initiated and IdP-initiated
+    // flows, which both terminate here.
+    const refresh = await issueRefreshToken(db, user.id, {
+      userAgent: c.req.header("User-Agent"),
+    });
+    setRefreshCookie(c, refresh.token);
 
     // Redirect to frontend with token
     const frontendCallbackUrl = relayState ? errorRedirectUrl : defaultRedirect;
