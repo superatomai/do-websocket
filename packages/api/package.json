@@ -6,10 +6,15 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:dev": "wrangler deploy --config wrangler.dev.toml",
+    "deploy:prod": "wrangler deploy --config wrangler.toml",
     "tail": "wrangler tail",
+    "tail:dev": "wrangler tail --config wrangler.dev.toml",
     "type-check": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate:dev": "DATABASE_URL=$(grep -E '^DATABASE_URL=' .dev.vars | cut -d= -f2-) drizzle-kit migrate",
+    "db:migrate:prod": "DATABASE_URL=$(grep -E '^DATABASE_URL=' .env | cut -d= -f2-) drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
   },
