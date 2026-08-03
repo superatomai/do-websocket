@@ -25,6 +25,12 @@ export type Env = {
   R2_SECRET_ACCESS_KEY: string;
   // Shared secret for backend → worker service calls (e.g. /upload/source-file/signed-get).
   SA_INTERNAL_SERVICE_TOKEN: string;
+  /**
+   * Cloudflare Turnstile secret for login captcha verification (VAPT 2e513875).
+   * Optional: login captcha is skipped until this is set, so the backend can
+   * ship before the front-ends send a token. Set it to switch enforcement on.
+   */
+  TURNSTILE_SECRET_KEY?: string;
   // Voice input (speech-to-text) — see docs/SPEECH-TO-TEXT-DESIGN.md.
   OPENROUTER_API_KEY: string;
   SPEECH_RATE_LIMITER: RateLimit;

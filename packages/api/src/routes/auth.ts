@@ -3,6 +3,7 @@ import { eq, and, inArray } from "drizzle-orm";
 import { users, organizations, appPermissions, apps, projects } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware } from "../middleware/auth";
+import { verifyTurnstile } from "../lib/turnstile";
 import { mintAccessToken } from "../lib/access-token";
 import {
   issueRefreshToken,
@@ -53,11 +54,24 @@ async function withDbRetry<T>(
  */
 auth.post("/login", async (c) => {
   const db = c.get("db");
-  const { email, password, orgSlug } = await c.req.json<{
+  const { email, password, orgSlug, turnstileToken } = await c.req.json<{
     email?: string;
     password: string;
     orgSlug?: string;
+    turnstileToken?: string;
   }>();
+
+  // Captcha check before any credential work, to throttle brute force and
+  // credential stuffing. No-ops until TURNSTILE_SECRET_KEY is configured.
+  const captchaError = await verifyTurnstile(
+    c.env,
+    turnstileToken,
+    c.req.header("CF-Connecting-IP")
+  );
+  if (captchaError) {
+    const status = captchaError.includes("unavailable") ? 503 : 400;
+    return c.json({ error: captchaError }, status);
+  }
 
   if (!email || !password) {
     return c.json({ error: "Email and password are required" }, 400);
