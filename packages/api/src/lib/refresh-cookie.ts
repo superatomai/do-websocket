@@ -16,6 +16,33 @@
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { REFRESH_TOKEN_TTL_MS } from "./refresh-tokens";
 
+/**
+ * Cookie name, scoped per environment.
+ *
+ * The Domain attribute below is `.superatom.ai`, which is shared by BOTH API
+ * hosts — sa-api.superatom.ai and sa-api-dev.superatom.ai — while each has its
+ * own database. A single cookie name therefore collides across environments:
+ * the browser sends a dev-issued refresh token to prod, prod cannot find that
+ * row in its own refresh_tokens table, and the user is signed out.
+ *
+ * That is not hypothetical — it happened when bluelinx.platform.superatom.ai
+ * was repointed from the dev API to prod: every session there broke until the
+ * stale cookie was cleared by hand. Distinct names let the two environments
+ * hold sessions side by side.
+ */
+export function refreshCookieName(requestUrl: string): string {
+  try {
+    const host = new URL(requestUrl).hostname;
+    // Any non-production API host gets its own cookie. Matching on the prod
+    // host (rather than looking for "dev") means a new environment added later
+    // is isolated by default instead of silently sharing prod's cookie.
+    return host === "sa-api.superatom.ai" ? "sa_refresh" : "sa_refresh_dev";
+  } catch {
+    return "sa_refresh_dev";
+  }
+}
+
+/** Legacy fixed name, kept so existing prod cookies keep working. */
 export const REFRESH_COOKIE_NAME = "sa_refresh";
 
 /**
@@ -49,7 +76,9 @@ function isSecureContext(requestUrl: string): boolean {
 }
 
 export function setRefreshCookie(c: any, token: string): void {
-  setCookie(c, REFRESH_COOKIE_NAME, token, {
+  const name = refreshCookieName(c.req.url);
+
+  setCookie(c, name, token, {
     httpOnly: true,
     secure: isSecureContext(c.req.url),
     sameSite: "Lax",
@@ -57,16 +86,27 @@ export function setRefreshCookie(c: any, token: string): void {
     domain: cookieDomain(c.req.url),
     maxAge: Math.floor(REFRESH_TOKEN_TTL_MS / 1000),
   });
+
+  // A browser that previously talked to the OTHER environment still holds its
+  // cookie on the shared .superatom.ai domain. Drop it on the way in, so a
+  // stale cross-environment token cannot be presented on a later request.
+  const stale = name === REFRESH_COOKIE_NAME ? "sa_refresh_dev" : REFRESH_COOKIE_NAME;
+  deleteCookie(c, stale, {
+    path: COOKIE_PATH,
+    domain: cookieDomain(c.req.url),
+    secure: isSecureContext(c.req.url),
+    sameSite: "Lax",
+  });
 }
 
 export function readRefreshCookie(c: any): string | undefined {
-  return getCookie(c, REFRESH_COOKIE_NAME);
+  return getCookie(c, refreshCookieName(c.req.url));
 }
 
 export function clearRefreshCookie(c: any): void {
   // Attributes must match the ones used to set it, or the browser keeps the
   // original cookie and logout silently fails to clear it.
-  deleteCookie(c, REFRESH_COOKIE_NAME, {
+  deleteCookie(c, refreshCookieName(c.req.url), {
     path: COOKIE_PATH,
     domain: cookieDomain(c.req.url),
     secure: isSecureContext(c.req.url),
