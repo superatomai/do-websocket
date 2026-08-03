@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { eq, and, sql } from "drizzle-orm";
 import { users, appPermissions, apps } from "../db/schema";
+import { validatePassword } from "../lib/password-policy";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware, adminOnly, orgScopeGuard } from "../middleware/auth";
 
@@ -36,6 +37,13 @@ usersRouter.post("/", async (c) => {
 
   if (!email || !name || !password) {
     return c.json({ error: "email, name, and password are required" }, 400);
+  }
+
+  // Enforce password strength on creation. Login is not gated, so existing
+  // accounts with older passwords keep working.
+  const pwError = validatePassword(password);
+  if (pwError) {
+    return c.json({ error: pwError }, 400);
   }
 
   // Nobody should create super_admin via this endpoint

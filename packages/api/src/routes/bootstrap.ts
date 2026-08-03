@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { users } from "../db/schema";
 import type { Env, AppVariables } from "../types";
+import { validatePassword } from "../lib/password-policy";
 
 const bootstrap = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -36,8 +37,9 @@ bootstrap.post("/bootstrap", async (c) => {
     return c.json({ error: "email, name, and password are all required" }, 400);
   }
 
-  if (body.password.length < 8) {
-    return c.json({ error: "Password must be at least 8 characters" }, 400);
+  const pwError = validatePassword(body.password);
+  if (pwError) {
+    return c.json({ error: pwError }, 400);
   }
 
   // Hash password using SHA-256 (Web Crypto API — compatible with Cloudflare Workers)

@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { organizations, users } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware, adminOnly, superAdminOnly, orgScopeGuard } from "../middleware/auth";
+import { validatePassword } from "../lib/password-policy";
 
 const orgs = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -64,8 +65,9 @@ orgs.post("/", authMiddleware, superAdminOnly, async (c) => {
     if (!admin.email || !admin.name || !admin.password) {
       return c.json({ error: "admin.email, admin.name, and admin.password are required" }, 400);
     }
-    if (admin.password.length < 8) {
-      return c.json({ error: "Admin password must be at least 8 characters" }, 400);
+    const pwError = validatePassword(admin.password);
+    if (pwError) {
+      return c.json({ error: pwError }, 400);
     }
 
     const passwordHash = await hashPassword(admin.password);
