@@ -440,7 +440,7 @@ sso.get("/callback", async (c) => {
     const refresh = await issueRefreshToken(db, user.id, {
       userAgent: c.req.header("User-Agent"),
     });
-    setRefreshCookie(c, refresh.token);
+    setRefreshCookie(c, refresh.token, user.orgId ?? undefined);
 
     if (!safeRedirectTo) {
       // Login succeeded but there is no verified destination to deliver the

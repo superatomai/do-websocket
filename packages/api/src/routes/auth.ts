@@ -13,6 +13,7 @@ import {
 import {
   setRefreshCookie,
   readRefreshCookie,
+  readLegacyRefreshCookie,
   clearRefreshCookie,
 } from "../lib/refresh-cookie";
 
@@ -143,7 +144,9 @@ auth.post("/login", async (c) => {
     const refresh = await issueRefreshToken(db, user.id, {
       userAgent: c.req.header("User-Agent"),
     });
-    setRefreshCookie(c, refresh.token);
+    // Per-org cookie so a second org login in the same browser does not
+    // overwrite this one. super_admin (no org) gets the base cookie.
+    setRefreshCookie(c, refresh.token, user.orgId ?? undefined);
 
     return c.json({
       token,
@@ -181,6 +184,7 @@ auth.post("/login", async (c) => {
 auth.post("/logout", authMiddleware, async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
+  const orgId = c.get("orgId");
 
   const cutoff = new Date(Math.floor(Date.now() / 1000) * 1000);
 
@@ -200,7 +204,10 @@ auth.post("/logout", authMiddleware, async (c) => {
     return c.json({ error: "Logout failed, please try again" }, 503);
   }
 
-  clearRefreshCookie(c);
+  // Clear only THIS org's cookie — a Superatom staffer logged into another org
+  // in another tab must stay signed in there. revokeAllForUser above only kills
+  // this user's families, and a user belongs to one org, so this is exact.
+  clearRefreshCookie(c, orgId ?? undefined);
 
   return c.json({ message: "Logged out successfully" });
 });
@@ -218,7 +225,46 @@ auth.post("/logout", authMiddleware, async (c) => {
  */
 auth.post("/refresh", async (c) => {
   const db = c.get("db");
-  const presented = readRefreshCookie(c);
+
+  // The tab tells us which session it wants: its projectId (runtime UIs) or
+  // orgId (admin UI). One browser can hold several org cookies, so without this
+  // hint we would not know which to rotate. The body is optional — an old client
+  // that posts nothing falls back to the base cookie below.
+  let hintOrgId: string | null = null;
+  try {
+    const body = await c.req.json<{ projectId?: string; orgId?: string; orgSlug?: string }>();
+    hintOrgId = body?.orgId ?? null;
+    if (!hintOrgId && body?.projectId) {
+      const [p] = await db
+        .select({ orgId: projects.orgId })
+        .from(projects)
+        .where(eq(projects.id, body.projectId))
+        .limit(1);
+      hintOrgId = p?.orgId ?? null;
+    }
+    if (!hintOrgId && body?.orgSlug) {
+      const [o] = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.slug, body.orgSlug))
+        .limit(1);
+      hintOrgId = o?.id ?? null;
+    }
+  } catch {
+    // No/invalid body — fall through to the base cookie.
+  }
+
+  // Prefer the org-scoped cookie; fall back to the base cookie for super_admin
+  // sessions and for sessions issued before per-org cookies existed. Track which
+  // one we actually used so a failure clears exactly that cookie.
+  let usedOrgId: string | null | undefined;
+  let presented = hintOrgId ? readRefreshCookie(c, hintOrgId) : undefined;
+  if (presented) {
+    usedOrgId = hintOrgId;
+  } else {
+    presented = readLegacyRefreshCookie(c);
+    if (presented) usedOrgId = null;
+  }
 
   if (!presented) {
     return c.json({ error: "No refresh token" }, 401);
@@ -227,8 +273,8 @@ auth.post("/refresh", async (c) => {
   const result = await rotateRefreshToken(db, presented, c.req.header("User-Agent"));
 
   if (!result.ok) {
-    // Any failure clears the cookie so the browser stops replaying a dead token.
-    clearRefreshCookie(c);
+    // Clear whichever cookie we read from so the browser stops replaying it.
+    clearRefreshCookie(c, usedOrgId ?? undefined);
     const message =
       result.reason === "reuse_detected"
         ? "Session revoked, please sign in again"
@@ -253,11 +299,14 @@ auth.post("/refresh", async (c) => {
 
   if (!user || !user.isActive) {
     await revokeAllForUser(db, result.userId);
-    clearRefreshCookie(c);
+    clearRefreshCookie(c, user?.orgId ?? usedOrgId ?? undefined);
     return c.json({ error: "Account is not active" }, 401);
   }
 
-  setRefreshCookie(c, result.token);
+  // Rotate the cookie under the user's actual org. When we fell back to the base
+  // cookie for an org user (a pre-per-org session), this migrates it onto the
+  // suffixed name.
+  setRefreshCookie(c, result.token, user.orgId ?? undefined);
   const token = await mintAccessToken(user, c.env.JWT_SECRET);
 
   return c.json({ token });
