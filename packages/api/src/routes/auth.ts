@@ -312,6 +312,16 @@ auth.post("/refresh", async (c) => {
   // cookie for an org user (a pre-per-org session), this migrates it onto the
   // suffixed name.
   setRefreshCookie(c, result.token, user.orgId ?? undefined);
+
+  // If we just migrated an org user OFF the legacy base cookie, drop the base
+  // cookie now. Otherwise it lingers holding the token we just consumed, and a
+  // later hint-less refresh would replay it and trip reuse detection — revoking
+  // the whole family (a hard logout of every session). super_admin keeps the
+  // base cookie (it has no org and legitimately uses it), hence the org guard.
+  if (usedOrgId === null && user.orgId) {
+    clearRefreshCookie(c);
+  }
+
   const token = await mintAccessToken(user, c.env.JWT_SECRET);
 
   return c.json({ token });
