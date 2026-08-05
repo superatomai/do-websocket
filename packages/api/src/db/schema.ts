@@ -427,3 +427,41 @@ export const refreshTokens = pgTable(
     index("refresh_tokens_expires_idx").on(table.expiresAt),
   ]
 );
+
+// ─── Answer Feedback (Feedback 1) ───────────────────────
+// Dual-write: local Postgres (authoritative) + central Neon (aggregate mirror)
+// This is the central Neon table. Local table lives in superatom-setup-code.
+
+export const answerFeedback = pgTable("answer_feedback", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orgId: varchar("org_id", { length: 255 }),
+  projectId: varchar("project_id", { length: 255 }),
+  userId: varchar("user_id", { length: 255 }),
+  uiBlockId: varchar("ui_block_id", { length: 255 }),
+  userPrompt: text("user_prompt").notNull(),
+  isCorrect: boolean("is_correct").notNull(),
+  feedbackText: text("feedback_text"),
+  answerSnapshot: jsonb("answer_snapshot"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("answer_feedback_org_id_idx").on(table.orgId),
+  index("answer_feedback_ui_block_id_idx").on(table.uiBlockId),
+  index("answer_feedback_created_at_idx").on(table.createdAt),
+]);
+
+// ─── Product Feedback (Feedback 2) ──────────────────────
+// Central Neon only — aggregates feedback from all client deployments
+
+export const productFeedback = pgTable("product_feedback", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orgId: varchar("org_id", { length: 255 }),
+  userId: varchar("user_id", { length: 255 }),
+  category: varchar("category", { length: 50 }),
+  message: text("message").notNull(),
+  pageContext: varchar("page_context", { length: 255 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("product_feedback_org_id_idx").on(table.orgId),
+  index("product_feedback_category_idx").on(table.category),
+  index("product_feedback_created_at_idx").on(table.createdAt),
+]);
