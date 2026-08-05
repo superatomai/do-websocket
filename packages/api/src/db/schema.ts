@@ -147,6 +147,11 @@ export const apps = pgTable("apps", {
     onDelete: "set null",
   }),
   isActive: boolean("is_active").default(true).notNull(),
+  // Bypasses app_permissions entirely — every member of this app's org can see
+  // and open it, with no per-user grant needed. Separate from
+  // organizations.defaultAppId (the single "land here by default" app); this
+  // can be set on any number of apps. Name may get revisited later.
+  isDefault: boolean("is_default").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

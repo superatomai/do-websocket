@@ -128,14 +128,19 @@ auth.post("/login", async (c) => {
     const user = validUsers[0];
 
     const allOrgIds = validUsers.map((u) => u.orgId).filter(Boolean) as string[];
-    const orgs = allOrgIds.length
+    // Role lives on the per-org user row, not on organizations — the caller
+    // (the multi-org picker) needs it to filter out orgs this email can't
+    // actually get into before ever showing them.
+    const roleByOrgId = new Map(validUsers.map((u) => [u.orgId, u.role]));
+    const orgRows = allOrgIds.length
       ? await withDbRetry("login:orgs-by-ids", () =>
           db
-            .select({ id: organizations.id, name: organizations.name, slug: organizations.slug })
+            .select({ id: organizations.id, name: organizations.name, slug: organizations.slug, icon: organizations.icon })
             .from(organizations)
             .where(inArray(organizations.id, allOrgIds))
         )
       : [];
+    const orgs = orgRows.map((o) => ({ ...o, role: roleByOrgId.get(o.id) }));
 
     // Short-lived access token (15m) plus a rotating refresh token held in an
     // httpOnly cookie — see lib/access-token.ts and lib/refresh-cookie.ts.
@@ -363,6 +368,7 @@ auth.get("/me", authMiddleware, async (c) => {
         type: apps.type,
         projectId: apps.projectId,
         projectName: projects.name,
+        isDefault: apps.isDefault,
         permission: appPermissions.permission,
       })
       .from(apps)
@@ -384,6 +390,7 @@ auth.get("/me", authMiddleware, async (c) => {
         type: apps.type,
         projectId: apps.projectId,
         projectName: projects.name,
+        isDefault: apps.isDefault,
         permission: appPermissions.permission,
       })
       .from(appPermissions)
@@ -402,6 +409,7 @@ auth.get("/me", authMiddleware, async (c) => {
           type: apps.type,
           projectId: apps.projectId,
           projectName: projects.name,
+          isDefault: apps.isDefault,
         })
         .from(apps)
         .innerJoin(projects, eq(projects.id, apps.projectId))

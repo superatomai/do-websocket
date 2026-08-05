@@ -59,12 +59,13 @@ appsRouter.post("/projects/:projectId/apps", authMiddleware, adminOnly, async (c
   const db = c.get("db");
   const projectId = c.req.param("projectId");
   const userId = c.get("userId");
-  const { name, type, description, config, icon } = await c.req.json<{
+  const { name, type, description, config, icon, isDefault } = await c.req.json<{
     name: string;
     type: "dashboard" | "app" | "report" | "chat_agent";
     description?: string;
     config?: Record<string, unknown>;
     icon?: string;
+    isDefault?: boolean;
   }>();
 
   if (!name || !type) {
@@ -76,7 +77,7 @@ appsRouter.post("/projects/:projectId/apps", authMiddleware, adminOnly, async (c
 
   const [app] = await db
     .insert(apps)
-    .values({ projectId, name, type, description, config, icon, createdBy: userId })
+    .values({ projectId, name, type, description, config, icon, isDefault, createdBy: userId })
     .returning();
 
   return c.json(app, 201);
@@ -141,8 +142,9 @@ appsRouter.put("/apps/:appId", authMiddleware, adminOnly, async (c) => {
     type?: "dashboard" | "app" | "report" | "chat_agent";
     description?: string;
     config?: Record<string, unknown>;
-    icon?: string;
+    icon?: string | null;
     isActive?: boolean;
+    isDefault?: boolean;
   }>();
 
   const denied = await denyAppAccess(c, appId);
@@ -155,8 +157,9 @@ appsRouter.put("/apps/:appId", authMiddleware, adminOnly, async (c) => {
     type?: "dashboard" | "app" | "report" | "chat_agent";
     description?: string;
     config?: Record<string, unknown>;
-    icon?: string;
+    icon?: string | null;
     isActive?: boolean;
+    isDefault?: boolean;
     updatedAt: Date;
   } = { updatedAt: new Date() };
 
@@ -179,7 +182,10 @@ appsRouter.put("/apps/:appId", authMiddleware, adminOnly, async (c) => {
     updates.description = body.description;
   }
   if (body.icon !== undefined) {
-    if (typeof body.icon !== "string") return c.json({ error: "Invalid icon" }, 400);
+    // null is a legitimate value here — it means "clear the icon", not "unset the field".
+    if (body.icon !== null && typeof body.icon !== "string") {
+      return c.json({ error: "Invalid icon" }, 400);
+    }
     updates.icon = body.icon;
   }
   if (body.isActive !== undefined) {
@@ -187,6 +193,12 @@ appsRouter.put("/apps/:appId", authMiddleware, adminOnly, async (c) => {
       return c.json({ error: "Invalid isActive" }, 400);
     }
     updates.isActive = body.isActive;
+  }
+  if (body.isDefault !== undefined) {
+    if (typeof body.isDefault !== "boolean") {
+      return c.json({ error: "Invalid isDefault" }, 400);
+    }
+    updates.isDefault = body.isDefault;
   }
   if (body.config !== undefined) updates.config = body.config;
 
