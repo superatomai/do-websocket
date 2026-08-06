@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { SignJWT, jwtVerify, createRemoteJWKSet } from "jose";
 import { users, organizations, ssoConfigs } from "../db/schema";
 import type { Env, AppVariables } from "../types";
@@ -369,6 +369,8 @@ sso.get("/callback", async (c) => {
 
     // Extract user identity from id_token
     const sub = idToken.sub as string;
+    // Stored as the IdP returns it — the lookup below and login's own
+    // comparison are both case-insensitive, so this doesn't need normalizing.
     const email = (idToken.email as string) || "";
     const name =
       (idToken.name as string) ||
@@ -392,7 +394,7 @@ sso.get("/callback", async (c) => {
       [user] = await db
         .select()
         .from(users)
-        .where(and(eq(users.orgId, orgId), eq(users.email, email)))
+        .where(and(eq(users.orgId, orgId), sql`lower(${users.email}) = lower(${email})`))
         .limit(1);
 
       if (user) {

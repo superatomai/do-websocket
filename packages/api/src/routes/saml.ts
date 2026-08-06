@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { SignJWT, jwtVerify } from "jose";
 import { users, organizations, ssoConfigs } from "../db/schema";
 import type { Env, AppVariables } from "../types";
@@ -313,7 +313,7 @@ saml.post("/acs", async (c) => {
       [user] = await db
         .select()
         .from(users)
-        .where(and(eq(users.orgId, orgId), eq(users.email, identity.email)))
+        .where(and(eq(users.orgId, orgId), sql`lower(${users.email}) = lower(${identity.email})`))
         .limit(1);
 
       if (user) {

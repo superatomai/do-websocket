@@ -39,6 +39,9 @@ usersRouter.post("/", async (c) => {
     return c.json({ error: "email, name, and password are required" }, 400);
   }
 
+  // Stored as typed — comparisons (below and at login) are case-insensitive,
+  // so this doesn't need to be normalized to match later.
+
   // Enforce password strength on creation. Login is not gated, so existing
   // accounts with older passwords keep working.
   const pwError = validatePassword(password);

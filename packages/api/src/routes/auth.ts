@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { users, organizations, appPermissions, apps, projects } from "../db/schema";
 import type { Env, AppVariables } from "../types";
 import { authMiddleware } from "../middleware/auth";
@@ -78,6 +78,12 @@ auth.post("/login", async (c) => {
     return c.json({ error: "Email and password are required" }, 400);
   }
 
+  // Compare case-insensitively: users.ts stores a lowercased email on
+  // creation, but existing rows created before that fix (or via SSO
+  // provisioning) may still hold mixed case — a case-sensitive match here
+  // would silently reject a correct password.
+  const normalizedEmail = email.trim().toLowerCase();
+
   // Hash the incoming password once for comparison
   const encoder = new TextEncoder();
   const hashBuffer = await crypto.subtle.digest("SHA-256", encoder.encode(password));
@@ -103,7 +109,7 @@ auth.post("/login", async (c) => {
         db
           .select()
           .from(users)
-          .where(and(eq(users.email, email), eq(users.orgId, org.id), eq(users.isActive, true)))
+          .where(and(sql`lower(${users.email}) = ${normalizedEmail}`, eq(users.orgId, org.id), eq(users.isActive, true)))
           .limit(1)
       );
       if (found) matchedUsers = [found];
@@ -113,7 +119,7 @@ auth.post("/login", async (c) => {
         db
           .select()
           .from(users)
-          .where(and(eq(users.email, email), eq(users.isActive, true)))
+          .where(and(sql`lower(${users.email}) = ${normalizedEmail}`, eq(users.isActive, true)))
       );
     }
 
