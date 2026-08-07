@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "answer_feedback_user_uiblock_unique" ON "answer_feedback" USING btree ("user_id","ui_block_id");
