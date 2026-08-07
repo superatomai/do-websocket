@@ -437,19 +437,29 @@ export const refreshTokens = pgTable(
 // Dual-write: local Postgres (authoritative) + central Neon (aggregate mirror)
 // This is the central Neon table. Local table lives in superatom-setup-code.
 
+export const feedbackStatus = pgEnum('feedback_status', ['correct', 'incorrect', 'partial'])
+
 export const answerFeedback = pgTable("answer_feedback", {
   id: uuid("id").defaultRandom().primaryKey(),
   orgId: varchar("org_id", { length: 255 }),
   projectId: varchar("project_id", { length: 255 }),
   userId: varchar("user_id", { length: 255 }),
-  uiBlockId: varchar("ui_block_id", { length: 255 }),
+  threadId: varchar("thread_id", { length: 255 }),
+  uiBlockId: varchar("ui_block_id", { length: 255 }).notNull(),
   userPrompt: text("user_prompt").notNull(),
-  isCorrect: boolean("is_correct").notNull(),
+  status: feedbackStatus(),
   feedbackText: text("feedback_text"),
   answerSnapshot: jsonb("answer_snapshot"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+  // Unique constraint for UPSERT: (userId, uiBlockId) — mirrors the local
+  // idx_answer_feedback_user_uiblock constraint in superatom-setup-code.
+  uniqueIndex("answer_feedback_user_uiblock_unique").on(
+    table.userId,
+    table.uiBlockId
+  ),
   index("answer_feedback_org_id_idx").on(table.orgId),
+  index("answer_feedback_thread_id_idx").on(table.threadId),
   index("answer_feedback_ui_block_id_idx").on(table.uiBlockId),
   index("answer_feedback_created_at_idx").on(table.createdAt),
 ]);

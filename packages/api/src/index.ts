@@ -19,7 +19,7 @@ import sourceUploadRoutes from "./routes/source-upload";
 import analyticsRoutes from "./routes/analytics";
 import speechRoutes from "./routes/speech";
 import answerFeedbackRoutes from "./routes/answer-feedback";
-import feedbackRoutes from "./routes/feedback";
+import feedbackRoutes from "./routes/product-feedback";
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 

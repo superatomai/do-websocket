@@ -8,17 +8,18 @@ const feedbackRouter = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 /**
  * POST /feedback
- * Create product feedback (unauthenticated, from browser)
+ * Create product feedback (authenticated via JWT from sa-platform-ui)
  *
- * Accepts feedback from any user about the product. Identity is optional
- * and sent from the runtime if available.
+ * Requires JWT authentication. Identity (orgId, userId) is extracted from the
+ * verified JWT token and cannot be spoofed. Frontend sends only the feedback
+ * content (message, category, pageContext).
  */
-feedbackRouter.post("/", async (c) => {
+feedbackRouter.post("/", authMiddleware, async (c) => {
   const db = c.get("db");
+  const userId = c.get("userId");
+  const orgId = c.get("orgId");
 
   const payload = await c.req.json<{
-    orgId?: string;
-    userId?: string;
     category?: string;
     message: string;
     pageContext?: string;
@@ -31,15 +32,21 @@ feedbackRouter.post("/", async (c) => {
   const [inserted] = await db
     .insert(productFeedback)
     .values({
-      orgId: payload.orgId || null,
-      userId: payload.userId || null,
+      orgId: orgId || null,
+      userId: userId || null,
       category: payload.category || null,
       message: payload.message,
       pageContext: payload.pageContext || null,
     })
     .returning();
 
-  return c.json(inserted, 201);
+  // Format timestamp to ISO string to preserve timezone info
+  const formattedInserted = {
+    ...inserted,
+    createdAt: inserted.createdAt.toISOString(),
+  };
+
+  return c.json(formattedInserted, 201);
 });
 
 /**
@@ -57,7 +64,13 @@ feedbackRouter.get("/", authMiddleware, superAdminOnly, async (c) => {
     .orderBy(desc(productFeedback.createdAt))
     .limit(200);
 
-  return c.json(rows, 200);
+  // Format timestamps to ISO strings to preserve timezone info
+  const formattedRows = rows.map((row) => ({
+    ...row,
+    createdAt: row.createdAt.toISOString(),
+  }));
+
+  return c.json(formattedRows, 200);
 });
 
 export default feedbackRouter;
