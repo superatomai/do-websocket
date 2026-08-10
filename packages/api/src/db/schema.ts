@@ -69,6 +69,13 @@ export const users = pgTable(
     ssoSubject: varchar("sso_subject", { length: 500 }),
     role: userRoleEnum("role").default("member").notNull(),
     isActive: boolean("is_active").default(true).notNull(),
+    /**
+     * Session revocation cutoff: tokens issued before this instant are rejected.
+     * This is what makes logout actually invalidate a JWT rather than merely
+     * asking the browser to forget it. Nullable — NULL means "never revoked", so
+     * adding this column leaves every existing token working.
+     */
+    tokensValidAfter: timestamp("tokens_valid_after", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -140,6 +147,11 @@ export const apps = pgTable("apps", {
     onDelete: "set null",
   }),
   isActive: boolean("is_active").default(true).notNull(),
+  // Bypasses app_permissions entirely — every member of this app's org can see
+  // and open it, with no per-user grant needed. Separate from
+  // organizations.defaultAppId (the single "land here by default" app); this
+  // can be set on any number of apps. Name may get revisited later.
+  isDefault: boolean("is_default").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -379,3 +391,92 @@ export const speechUsage = pgTable(
     index("speech_usage_created_at_idx").on(table.createdAt),
   ]
 );
+
+// ─── Refresh Tokens ──────────────────────────────────────
+
+/**
+ * Rotating refresh tokens.
+ *
+ * Access tokens are short-lived (15m) and stateless; refreshing them needs
+ * server state, because a stateless token cannot be revoked. Each refresh
+ * consumes the presented token and issues a replacement in the same `familyId`.
+ *
+ * Presenting an ALREADY-ROTATED token means two parties hold it — the real user
+ * and a thief — so the whole family is revoked and everyone re-authenticates.
+ * That does not prevent theft; it makes theft self-limiting and detectable.
+ *
+ * Only the SHA-256 of the secret is stored, so a database leak does not yield
+ * usable tokens.
+ */
+export const refreshTokens = pgTable(
+  "refresh_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Shared by every token descended from one login; revoked as a unit. */
+    familyId: uuid("family_id").notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /** Set when this token has been exchanged. Non-null + past grace = reuse. */
+    rotatedAt: timestamp("rotated_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    replacedById: uuid("replaced_by_id"),
+    userAgent: varchar("user_agent", { length: 500 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("refresh_tokens_family_idx").on(table.familyId),
+    index("refresh_tokens_user_idx").on(table.userId),
+    index("refresh_tokens_expires_idx").on(table.expiresAt),
+  ]
+);
+
+// ─── Answer Feedback (Feedback 1) ───────────────────────
+// Dual-write: local Postgres (authoritative) + central Neon (aggregate mirror)
+// This is the central Neon table. Local table lives in superatom-setup-code.
+
+export const feedbackStatus = pgEnum('feedback_status', ['correct', 'incorrect', 'partial'])
+
+export const answerFeedback = pgTable("answer_feedback", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orgId: varchar("org_id", { length: 255 }),
+  projectId: varchar("project_id", { length: 255 }),
+  userId: varchar("user_id", { length: 255 }),
+  threadId: varchar("thread_id", { length: 255 }),
+  uiBlockId: varchar("ui_block_id", { length: 255 }).notNull(),
+  userPrompt: text("user_prompt").notNull(),
+  status: feedbackStatus(),
+  feedbackText: text("feedback_text"),
+  answerSnapshot: jsonb("answer_snapshot"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  // Unique constraint for UPSERT: (userId, uiBlockId) — mirrors the local
+  // idx_answer_feedback_user_uiblock constraint in superatom-setup-code.
+  uniqueIndex("answer_feedback_user_uiblock_unique").on(
+    table.userId,
+    table.uiBlockId
+  ),
+  index("answer_feedback_org_id_idx").on(table.orgId),
+  index("answer_feedback_thread_id_idx").on(table.threadId),
+  index("answer_feedback_ui_block_id_idx").on(table.uiBlockId),
+  index("answer_feedback_created_at_idx").on(table.createdAt),
+]);
+
+// ─── Product Feedback (Feedback 2) ──────────────────────
+// Central Neon only — aggregates feedback from all client deployments
+
+export const productFeedback = pgTable("product_feedback", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  orgId: varchar("org_id", { length: 255 }),
+  userId: varchar("user_id", { length: 255 }),
+  category: varchar("category", { length: 50 }),
+  message: text("message").notNull(),
+  pageContext: varchar("page_context", { length: 255 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("product_feedback_org_id_idx").on(table.orgId),
+  index("product_feedback_category_idx").on(table.category),
+  index("product_feedback_created_at_idx").on(table.createdAt),
+]);

@@ -87,12 +87,16 @@ projectsRouter.get("/", async (c) => {
  */
 projectsRouter.get("/:projectId", async (c) => {
   const db = c.get("db");
+  const orgId = c.req.param("orgId")!;
   const projectId = c.req.param("projectId");
 
+  // Scoped to the org in the path. orgScopeGuard proves that :orgId matches the
+  // caller's token, but says nothing about which org the PROJECT belongs to — an
+  // unscoped lookup by id reaches projects in any other tenant.
   const [project] = await db
     .select()
     .from(projects)
-    .where(eq(projects.id, projectId))
+    .where(and(eq(projects.id, projectId), eq(projects.orgId, orgId)))
     .limit(1);
 
   if (!project) {
@@ -113,13 +117,52 @@ projectsRouter.get("/:projectId", async (c) => {
  */
 projectsRouter.put("/:projectId", async (c) => {
   const db = c.get("db");
+  const orgId = c.req.param("orgId")!;
   const projectId = c.req.param("projectId");
   const body = await c.req.json<{ name?: string; slug?: string; description?: string; icon?: string; designSystem?: Record<string, unknown>; config?: Record<string, unknown> }>();
 
+  // Explicit allowlist. Spreading the body allowed setting any column — notably
+  // `orgId`, which would move a project into another tenant.
+  const updates: {
+    name?: string;
+    slug?: string;
+    description?: string;
+    icon?: string;
+    designSystem?: Record<string, unknown>;
+    config?: Record<string, unknown>;
+    updatedAt: Date;
+  } = { updatedAt: new Date() };
+
+  if (body.name !== undefined) {
+    if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 255) {
+      return c.json({ error: "Invalid name" }, 400);
+    }
+    updates.name = body.name;
+  }
+  if (body.slug !== undefined) {
+    if (typeof body.slug !== "string" || !body.slug.trim() || body.slug.length > 100) {
+      return c.json({ error: "Invalid slug" }, 400);
+    }
+    updates.slug = body.slug;
+  }
+  if (body.description !== undefined) {
+    if (typeof body.description !== "string") {
+      return c.json({ error: "Invalid description" }, 400);
+    }
+    updates.description = body.description;
+  }
+  if (body.icon !== undefined) {
+    if (typeof body.icon !== "string") return c.json({ error: "Invalid icon" }, 400);
+    updates.icon = body.icon;
+  }
+  if (body.designSystem !== undefined) updates.designSystem = body.designSystem;
+  if (body.config !== undefined) updates.config = body.config;
+
   const [updated] = await db
     .update(projects)
-    .set({ ...body, updatedAt: new Date() })
-    .where(eq(projects.id, projectId))
+    .set(updates)
+    // Org-scoped: otherwise an admin can edit projects in any other tenant.
+    .where(and(eq(projects.id, projectId), eq(projects.orgId, orgId)))
     .returning();
 
   if (!updated) {
@@ -135,11 +178,14 @@ projectsRouter.put("/:projectId", async (c) => {
  */
 projectsRouter.delete("/:projectId", async (c) => {
   const db = c.get("db");
+  const orgId = c.req.param("orgId")!;
   const projectId = c.req.param("projectId");
 
+  // Org-scoped: this cascades to apps and permissions, so an unscoped delete let
+  // an admin destroy another tenant's project outright.
   const [deleted] = await db
     .delete(projects)
-    .where(eq(projects.id, projectId))
+    .where(and(eq(projects.id, projectId), eq(projects.orgId, orgId)))
     .returning({ id: projects.id });
 
   if (!deleted) {

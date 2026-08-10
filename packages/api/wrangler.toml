@@ -19,12 +19,13 @@ bucket_name = "sa-assets"
 [[r2_buckets]]
 binding = "R2_SOURCE_FILES"
 bucket_name = "sa-source-files"
-# LOCAL TESTING ONLY — do not commit. Must equal bucket_name because the upload
-# code hardcodes "sa-source-files" when presigning URLs. Remove before pushing.
+# LOCAL TESTING ONLY — do not commit. Lets `wrangler dev --remote` use the real
+# bucket. Remove before pushing.
 # preview_bucket_name = "sa-source-files"
 
 [vars]
 R2_PUBLIC_URL = "https://sa-assets.superatom.ai"
+R2_SOURCE_FILES_BUCKET_NAME = "sa-source-files"
 
 # Per-user voice rate limit (docs/SPEECH-TO-TEXT-DESIGN.md §3.4). period must be 10 or 60.
 [[unsafe.bindings]]

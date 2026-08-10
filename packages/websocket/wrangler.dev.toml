@@ -1,0 +1,40 @@
+name = "sa-websocket-dev"
+main = "src/index.ts"
+compatibility_date = "2024-09-02"
+compatibility_flags = ["nodejs_compat"]
+
+# Define the Broadcaster Durable Object
+[[durable_objects.bindings]]
+name = "BROADCASTER"
+class_name = "Broadcaster"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Broadcaster"]
+
+[observability.logs]
+enabled = true
+
+[vars]
+# Rollout gate for browser (runtime/admin) session auth.
+# "false" = verify and log the outcome, but still allow the connection through.
+# "true"  = reject unauthenticated / cross-org browser connections.
+# Deploy with "false", confirm the logs are clean, then flip to "true".
+WS_AUTH_ENFORCE = "false"
+
+# Secrets (set via wrangler, not in this file):
+#   wrangler secret put DATABASE_URL --config wrangler.dev.toml
+#   wrangler secret put SUPERATOM_SERVICE_KEY --config wrangler.dev.toml
+#   wrangler secret put JWT_SECRET --config wrangler.dev.toml
+#
+# DATABASE_URL: same dev Neon Postgres connection string used by sa-api-dev
+#   (this worker reads/writes the api_keys table that packages/api owns —
+#   they must point at the same database or API key validation breaks)
+# SUPERATOM_SERVICE_KEY: a fresh dev-only value (different from prod's),
+#   guards the admin api-key management endpoints
+# JWT_SECRET: MUST be byte-identical to sa-api-dev's JWT_SECRET — sa-api-dev
+#   signs browser session tokens, this worker verifies them. A mismatch
+#   rejects every browser connection once WS_AUTH_ENFORCE is "true".
+#
+# Deploy:
+#   wrangler deploy --config wrangler.dev.toml

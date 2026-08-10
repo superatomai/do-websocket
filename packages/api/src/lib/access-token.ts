@@ -1,0 +1,35 @@
+/**
+ * Access token minting — one definition, used by all three login paths
+ * (password, OIDC, SAML).
+ *
+ * Previously each path had its own `SignJWT(...).setExpirationTime(...)` chain,
+ * which is how they all ended up at 180 days and had to be changed in three
+ * places. Centralising means the lifetime cannot drift between them.
+ */
+
+import { SignJWT } from "jose";
+
+/**
+ * 15 minutes. Short because the token is a bearer credential that travels in
+ * URLs — the WebSocket handshake query string and the SSO callback — and can
+ * therefore reach access logs and browser history. The refresh cookie carries
+ * the long-lived session instead, out of reach of JavaScript.
+ */
+export const ACCESS_TOKEN_TTL = "15m";
+
+export async function mintAccessToken(
+  user: { id: string; orgId: string | null; role: string },
+  jwtSecret: string
+): Promise<string> {
+  const secret = new TextEncoder().encode(jwtSecret);
+
+  return new SignJWT({
+    userId: user.id,
+    orgId: user.orgId,
+    role: user.role,
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(ACCESS_TOKEN_TTL)
+    .sign(secret);
+}

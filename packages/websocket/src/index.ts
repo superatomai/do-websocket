@@ -1,11 +1,31 @@
 export { Broadcaster } from './broadcaster/broadcaster';
 import { handleApiKeyRoutes, validateApiKey } from './api-keys';
+import { extractToken, verifyBrowserSession, type VerifiedSession } from './auth/session';
 
 export interface Env {
 	BROADCASTER: DurableObjectNamespace;
 	DATABASE_URL: string;
 	SUPERATOM_SERVICE_KEY: string;
+	/** Shared with sa-api; verifies browser session tokens. */
+	JWT_SECRET: string;
+	/** "true" enforces browser auth; anything else logs violations only. */
+	WS_AUTH_ENFORCE: string;
 }
+
+/**
+ * Identity headers this worker sets for the Durable Object. They are stripped
+ * from every inbound request before being re-set, because the original client
+ * request is forwarded to the DO and a caller could otherwise simply send them.
+ */
+const INTERNAL_IDENTITY_HEADERS = [
+	'x-sa-authenticated',
+	'x-sa-session-user',
+	'x-sa-session-org',
+	'x-sa-session-role',
+];
+
+/** Browser clients that authenticate with a user JWT rather than an API key. */
+const BROWSER_TYPES = ['runtime', 'admin'];
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -107,10 +127,70 @@ export default {
 			}
 		}
 
+		// Browser clients authenticate with the sa-api session JWT. The session is
+		// verified on every connection; WS_AUTH_ENFORCE only decides whether a
+		// failure is rejected or merely logged, so a staged rollout can surface
+		// which deployments still connect without a token before they start failing.
+		const enforce = env.WS_AUTH_ENFORCE === 'true';
+		let session: VerifiedSession | null = null;
+
+		if (BROWSER_TYPES.includes(connectionType ?? '')) {
+			const result = await verifyBrowserSession({
+				token: extractToken(request, url),
+				projectId,
+				jwtSecret: env.JWT_SECRET,
+				databaseUrl: env.DATABASE_URL,
+			});
+
+			if (result.ok) {
+				session = result.session;
+			} else {
+				console.warn(
+					`[auth] browser session rejected: reason=${result.reason} ` +
+						`type=${connectionType} projectId=${projectId} enforced=${enforce}`
+				);
+
+				if (enforce) {
+					return new Response(
+						JSON.stringify({
+							error: result.status === 403 ? 'Forbidden' : 'Unauthorized',
+							message:
+								result.status === 403
+									? 'This session is not permitted to access the requested project.'
+									: 'A valid session token is required. Provide it via ?token=<jwt> or an Authorization: Bearer header.',
+							projectId,
+						}),
+						{
+							status: result.status,
+							headers: { 'Content-Type': 'application/json' },
+						}
+					);
+				}
+			}
+		}
+
 		try {
 			const durableObjectId = env.BROADCASTER.idFromName(projectId);
 			const durableObjectStub = env.BROADCASTER.get(durableObjectId);
-			const response = await durableObjectStub.fetch(request);
+
+			// The original client request is forwarded to the DO, so any identity
+			// header a caller sent must be dropped before this worker sets its own.
+			const forwardedHeaders = new Headers(request.headers);
+			for (const header of INTERNAL_IDENTITY_HEADERS) {
+				forwardedHeaders.delete(header);
+			}
+
+			// Authenticated means "credential actually validated": a checked API key
+			// for server components, or a verified session for browser clients.
+			forwardedHeaders.set('x-sa-authenticated', requiresApiKey || session ? 'true' : 'false');
+			if (session) {
+				forwardedHeaders.set('x-sa-session-user', session.userId);
+				forwardedHeaders.set('x-sa-session-role', session.role);
+				if (session.orgId) forwardedHeaders.set('x-sa-session-org', session.orgId);
+			}
+
+			const forwardedRequest = new Request(request, { headers: forwardedHeaders });
+			const response = await durableObjectStub.fetch(forwardedRequest);
 
 			if (response.status === 101) {
 				return response;

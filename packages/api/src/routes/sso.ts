@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { SignJWT, jwtVerify, createRemoteJWKSet } from "jose";
 import { users, organizations, ssoConfigs } from "../db/schema";
 import type { Env, AppVariables } from "../types";
@@ -9,6 +9,10 @@ import {
   buildAuthnRequest,
   deflateAndEncode,
 } from "../lib/saml";
+import { isAllowedRedirect } from "../lib/origins";
+import { ACCESS_TOKEN_TTL } from "../lib/access-token";
+import { issueRefreshToken } from "../lib/refresh-tokens";
+import { setRefreshCookie } from "../lib/refresh-cookie";
 
 const sso = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -123,6 +127,15 @@ sso.get("/authorize", async (c) => {
     return c.json({ error: "org_slug query parameter is required" }, 400);
   }
 
+  // Reject a hostile redirect target before any IdP round-trip. This is not a
+  // plain open redirect: the callback appends the session token to this URL
+  // (`?token=<jwt>`), so an unvalidated value hands a fully authenticated
+  // session to whoever controls the destination — after the victim completes a
+  // genuine login at their real IdP.
+  if (redirectTo && !isAllowedRedirect(redirectTo, c.env)) {
+    return c.json({ error: "redirect_to is not an allowed URL" }, 400);
+  }
+
   // Look up org by slug
   const [org] = await db
     .select()
@@ -213,6 +226,39 @@ sso.get("/authorize", async (c) => {
 });
 
 /**
+ * Minimal escaping for text interpolated into the small HTML error page below.
+ */
+function escapeHtml(input: string): string {
+  return input
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Rendered in place (no redirect) when an SSO callback fails and there is no
+ * verified, allow-listed front-end to send the browser back to. Falling back
+ * to one fixed URL here would mean guessing a single org's domain for every
+ * org's failed logins — instead of guessing, just say what happened.
+ */
+function ssoErrorPage(message: string): Response {
+  return new Response(
+    `<!DOCTYPE html>
+<html>
+  <head><meta charset="utf-8"><title>Sign-in failed</title></head>
+  <body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; text-align: center;">
+    <h2>Sign-in failed</h2>
+    <p>${escapeHtml(message)}</p>
+    <p>Please close this tab and try signing in again from your application.</p>
+  </body>
+</html>`,
+    { status: 400, headers: { "Content-Type": "text/html; charset=utf-8" } }
+  );
+}
+
+/**
  * GET /auth/sso/callback?code=...&state=...
  * Handles the IdP redirect after user authentication.
  * Exchanges the authorization code for tokens, creates/matches user, issues JWT.
@@ -224,26 +270,46 @@ sso.get("/callback", async (c) => {
   const error = c.req.query("error");
   const errorDescription = c.req.query("error_description");
 
-  // Default fallback URL if no redirect_to was provided in the authorize step
-  const fallbackUrl = c.env.PLATFORM_UI_URL || "http://localhost:5173";
+  // Decode `state` up front so we know where to send the user back to even
+  // when the IdP reports an error — it echoes `state` back on error redirects
+  // too, so it is just as recoverable here as on the success path. If it
+  // can't be recovered (missing, expired, tampered), we have no way to know
+  // which org's front-end this login was for, so every error below renders
+  // an in-place message via respondError instead of guessing a destination.
+  let stateData: { orgId: string; nonce: string; redirectTo?: string } | null = null;
+  if (state) {
+    try {
+      stateData = await verifyStateToken(state, c.env.JWT_SECRET);
+    } catch {
+      // Expired/invalid/tampered state — treated as unrecoverable below.
+    }
+  }
 
-  // Handle IdP errors (state may not be verifiable here, so use fallback)
+  // Re-validate on the way out as well as on the way in. The state token is
+  // signed, which proves WE minted it — not that its contents are safe, since
+  // the value came from a query parameter in the first place. Re-checking here
+  // makes any state token already issued with a hostile URL inert.
+  const safeRedirectTo =
+    stateData?.redirectTo && isAllowedRedirect(stateData.redirectTo, c.env)
+      ? stateData.redirectTo
+      : null;
+
+  const respondError = (msg: string) =>
+    safeRedirectTo
+      ? c.redirect(`${safeRedirectTo}?error=${encodeURIComponent(msg)}`)
+      : ssoErrorPage(msg);
+
   if (error) {
-    const msg = errorDescription || error;
-    return c.redirect(`${fallbackUrl}/sso-callback?error=${encodeURIComponent(msg)}`);
+    return respondError(errorDescription || error);
   }
 
-  if (!code || !state) {
-    return c.redirect(`${fallbackUrl}/sso-callback?error=${encodeURIComponent("Missing code or state parameter")}`);
+  if (!code || !stateData) {
+    return respondError("Missing code or state parameter");
   }
+
+  const { orgId, nonce } = stateData;
 
   try {
-    // Verify state token to recover orgId, nonce, and redirectTo
-    const { orgId, nonce, redirectTo } = await verifyStateToken(state, c.env.JWT_SECRET);
-
-    // Use the redirect URL from the state token, or fall back to PLATFORM_UI_URL + /sso-callback
-    const frontendCallbackUrl = redirectTo || `${fallbackUrl}/sso-callback`;
-
     // Look up SSO config for this org
     const [config] = await db
       .select()
@@ -252,11 +318,11 @@ sso.get("/callback", async (c) => {
       .limit(1);
 
     if (!config) {
-      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("SSO configuration not found")}`);
+      return respondError("SSO configuration not found");
     }
 
     if (!config.issuerUrl || !config.clientId || !config.clientSecret) {
-      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("OIDC SSO is misconfigured")}`);
+      return respondError("OIDC SSO is misconfigured");
     }
 
     // Fetch OIDC discovery
@@ -284,7 +350,7 @@ sso.get("/callback", async (c) => {
       const errBody = await tokenRes.text();
       console.error("[SSO] Token exchange failed:", errBody);
       console.error("[SSO] redirect_uri used:", callbackUrl.toString());
-      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("Token exchange failed: " + errBody)}`);
+      return respondError("Token exchange failed: " + errBody);
     }
 
     const tokens: OIDCTokenResponse = await tokenRes.json();
@@ -298,11 +364,13 @@ sso.get("/callback", async (c) => {
 
     // Verify nonce
     if (idToken.nonce !== nonce) {
-      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("Invalid nonce")}`);
+      return respondError("Invalid nonce");
     }
 
     // Extract user identity from id_token
     const sub = idToken.sub as string;
+    // Stored as the IdP returns it — the lookup below and login's own
+    // comparison are both case-insensitive, so this doesn't need normalizing.
     const email = (idToken.email as string) || "";
     const name =
       (idToken.name as string) ||
@@ -310,7 +378,7 @@ sso.get("/callback", async (c) => {
       email.split("@")[0];
 
     if (!sub || !email) {
-      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("IdP did not return email or subject")}`);
+      return respondError("IdP did not return email or subject");
     }
 
     // Find or create user
@@ -326,7 +394,7 @@ sso.get("/callback", async (c) => {
       [user] = await db
         .select()
         .from(users)
-        .where(and(eq(users.orgId, orgId), eq(users.email, email)))
+        .where(and(eq(users.orgId, orgId), sql`lower(${users.email}) = lower(${email})`))
         .limit(1);
 
       if (user) {
@@ -353,7 +421,7 @@ sso.get("/callback", async (c) => {
     }
 
     if (!user.isActive) {
-      return c.redirect(`${frontendCallbackUrl}?error=${encodeURIComponent("Account is deactivated")}`);
+      return respondError("Account is deactivated");
     }
 
     // Issue SA-API JWT
@@ -365,14 +433,30 @@ sso.get("/callback", async (c) => {
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
-      .setExpirationTime("180d")
+      .setExpirationTime(ACCESS_TOKEN_TTL)
       .sign(secret);
 
+    // The refresh token goes in an httpOnly cookie; only the 15-minute access
+    // token travels in the URL. That bounds the damage if this redirect leaks
+    // into browser history or an access log.
+    const refresh = await issueRefreshToken(db, user.id, {
+      userAgent: c.req.header("User-Agent"),
+    });
+    setRefreshCookie(c, refresh.token, user.orgId ?? undefined);
+
+    if (!safeRedirectTo) {
+      // Login succeeded but there is no verified destination to deliver the
+      // session token to — never hand a live token to a guessed URL.
+      return ssoErrorPage(
+        "Signed in successfully, but no valid return address was provided. Please return to your application."
+      );
+    }
+
     // Redirect to the frontend that initiated SSO with the token
-    return c.redirect(`${frontendCallbackUrl}?token=${saToken}`);
+    return c.redirect(`${safeRedirectTo}?token=${saToken}`);
   } catch (err: any) {
     console.error("[SSO] Callback error:", err);
-    return c.redirect(`${fallbackUrl}/sso-callback?error=${encodeURIComponent("SSO authentication failed")}`);
+    return respondError("SSO authentication failed");
   }
 });
 

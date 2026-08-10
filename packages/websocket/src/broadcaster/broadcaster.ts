@@ -312,11 +312,14 @@ export class Broadcaster implements DurableObject {
 			// Accept the WebSocket for hibernation
 			this.state.acceptWebSocket(server);
 
-			// Auth: the worker (src/index.ts) rejects any request without a VALID
-			// project API key before it reaches us, so a key present here is valid.
-			// Stored so REGISTER_PROXY/DS_QUERY can require it.
-			const authenticated = !!url.searchParams.get('apiKey')
-				|| !!request.headers.get('x-api-key');
+			// Auth: src/index.ts validates the credential — a project API key for
+			// server components, a verified sa-api session for browser clients —
+			// and stamps the outcome here, stripping any client-supplied copy of
+			// these headers first so they cannot be forged. The presence of an
+			// apiKey PARAMETER is deliberately NOT used: it was never proof the key
+			// was valid, and browser types were never key-checked at all, so
+			// ?type=runtime&apiKey=anything used to unlock the data plane.
+			const authenticated = request.headers.get('x-sa-authenticated') === 'true';
 
 			// Attach metadata using serializeAttachment for hibernatable WebSockets
 			const clientMetadata = {
@@ -324,6 +327,10 @@ export class Broadcaster implements DurableObject {
 				type: type,
 				connectedAt: connectedAt,
 				authenticated: authenticated,
+				// Identity comes from the verified token, never from ?userId=.
+				userId: request.headers.get('x-sa-session-user') || null,
+				orgId: request.headers.get('x-sa-session-org') || null,
+				role: request.headers.get('x-sa-session-role') || null,
 				userAgent: request.headers.get('User-Agent') || 'unknown',
 				origin: request.headers.get('Origin') || 'unknown'
 			};

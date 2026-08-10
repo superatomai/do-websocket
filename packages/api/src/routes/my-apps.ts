@@ -43,6 +43,7 @@ myApps.get("/", async (c) => {
         projectName: projects.name,
         icon: apps.icon,
         config: apps.config,
+        isDefault: apps.isDefault,
         permission: appPermissions.permission,
         createdAt: apps.createdAt,
         updatedAt: apps.updatedAt,
@@ -79,6 +80,7 @@ myApps.get("/", async (c) => {
         projectName: projects.name,
         icon: apps.icon,
         config: apps.config,
+        isDefault: apps.isDefault,
         permission: appPermissions.permission,
         createdAt: apps.createdAt,
         updatedAt: apps.updatedAt,
@@ -100,6 +102,7 @@ myApps.get("/", async (c) => {
           projectName: projects.name,
           icon: apps.icon,
           config: apps.config,
+          isDefault: apps.isDefault,
           createdAt: apps.createdAt,
           updatedAt: apps.updatedAt,
         })
@@ -110,6 +113,42 @@ myApps.get("/", async (c) => {
 
       if (defaultApp) {
         userApps.unshift({ ...defaultApp, permission: "view" });
+      }
+    }
+
+    // Also add any apps in this org marked isDefault — bypasses app_permissions
+    // entirely, distinct from the single org.defaultAppId above. Must filter by
+    // orgId explicitly here (unlike the org.defaultAppId check, which is
+    // inherently org-scoped) since this query can span many apps.
+    if (orgId) {
+      const defaultApps = await db
+        .select({
+          id: apps.id,
+          name: apps.name,
+          type: apps.type,
+          description: apps.description,
+          projectId: apps.projectId,
+          projectName: projects.name,
+          icon: apps.icon,
+          config: apps.config,
+          isDefault: apps.isDefault,
+          createdAt: apps.createdAt,
+          updatedAt: apps.updatedAt,
+        })
+        .from(apps)
+        .innerJoin(projects, eq(projects.id, apps.projectId))
+        .where(
+          and(
+            eq(projects.orgId, orgId),
+            eq(apps.isDefault, true),
+            eq(apps.isActive, true)
+          )
+        );
+
+      for (const defaultApp of defaultApps) {
+        if (!userApps.find((a) => a.id === defaultApp.id)) {
+          userApps.unshift({ ...defaultApp, permission: "view" });
+        }
       }
     }
   }
@@ -169,7 +208,13 @@ myApps.get("/:appId", async (c) => {
           .limit(1)
       : [null];
 
-    if (!org?.defaultAppId || org.defaultAppId !== appId) {
+    const isOrgDefault = org?.defaultAppId === appId;
+    // isDefault bypasses app_permissions for every member of the app's own
+    // org — the org check here is load-bearing: without it, a member could
+    // open another org's isDefault app just by knowing its id.
+    const isOrgWideDefault = app.apps.isDefault && app.projects.orgId === orgId;
+
+    if (!isOrgDefault && !isOrgWideDefault) {
       return c.json({ error: "Forbidden" }, 403);
     }
 

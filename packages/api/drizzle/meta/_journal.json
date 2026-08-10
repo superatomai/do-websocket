@@ -15,6 +15,48 @@
       "when": 1785468363068,
       "tag": "0001_add_speech_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785507408726,
+      "tag": "0002_cloudy_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785572791419,
+      "tag": "0003_parched_zodiak",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785915019634,
+      "tag": "0004_sleepy_blindfold",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785940552528,
+      "tag": "0005_bizarre_microbe",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786088320264,
+      "tag": "0006_gigantic_fixer",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786089973480,
+      "tag": "0007_needy_puck",
+      "breakpoints": true
     }
   ]
 }

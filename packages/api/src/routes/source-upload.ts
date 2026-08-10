@@ -62,8 +62,8 @@ function r2EndpointBase(env: Env): string {
   return `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
 }
 
-function bucketName(): string {
-  return "sa-source-files";
+function bucketName(env: Env): string {
+  return env.R2_SOURCE_FILES_BUCKET_NAME;
 }
 
 function sanitizeFileName(name: string): string {
@@ -165,7 +165,7 @@ sourceUploadRouter.post("/initiate", authMiddleware, async (c) => {
   // Presign one PUT URL per part. The URL points at R2's S3-compatible endpoint
   // and includes uploadId + partNumber in the query string.
   const aws = r2S3Client(c.env);
-  const base = `${r2EndpointBase(c.env)}/${bucketName()}/${encodeURI(key)}`;
+  const base = `${r2EndpointBase(c.env)}/${bucketName(c.env)}/${encodeURI(key)}`;
 
   const partUrls: Array<{ partNumber: number; url: string }> = [];
   for (let i = 1; i <= partCount; i++) {
@@ -303,7 +303,7 @@ sourceUploadRouter.post("/signed-get", async (c) => {
   if (!body?.key) return c.json({ error: "key is required" }, 400);
 
   const aws = r2S3Client(c.env);
-  const url = `${r2EndpointBase(c.env)}/${bucketName()}/${encodeURI(body.key)}?X-Amz-Expires=${DOWNLOAD_URL_TTL_SECONDS}`;
+  const url = `${r2EndpointBase(c.env)}/${bucketName(c.env)}/${encodeURI(body.key)}?X-Amz-Expires=${DOWNLOAD_URL_TTL_SECONDS}`;
   const signed = await aws.sign(url, { method: "GET", aws: { signQuery: true } });
 
   return c.json({ url: signed.url, expiresIn: DOWNLOAD_URL_TTL_SECONDS });
