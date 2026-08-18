@@ -269,7 +269,64 @@ schema/KB context, not a reconstruction that could drift from reality as the und
 changes. `hasTraceContent()` (`conversation-saver.ts`) updated to also treat these new fields as
 "worth saving a row for."
 
-## 11. Explicitly deferred (future phases, not designed yet)
+## 11. Entity resolution capture (implemented)
+
+`sdk-nodejs`'s `dev` branch added a `resolve_entities` tool (pinned to iteration 1 of every
+MainAgent turn) that turns named things the user mentioned ("FDC limited") into database ids
+*before* any SQL is written — backed by a new `entity-search` collection on `fusion-5/backend`
+(`total-group-script` branch). MainAgent only keeps a trimmed `{mention, entityType, instanceId,
+displayName}` copy for itself (to append to each SourceAgent dispatch); the richer response detail
+— match score, whether it was ambiguous, other close candidates — was being discarded. Captured
+into the trace instead, same pattern as everything else in this doc:
+
+- `entityResolution.catalogText` — the entity-type catalog text injected into MainAgent's system
+  prompt (`loadEntityCatalog`'s output), captured once per turn.
+- `entityResolution.calls[]` — one entry per `resolve_entities` tool call this turn, with the
+  **full** raw response from the entity-search collection: `resolved[]` (mention → entityType id,
+  plus `score`/`ambiguous`/`alternatives`, none of which exist anywhere else), `unresolved[]`,
+  `entityMap` (business-concept resolutions), `unmatchedEntityTypes[]`, and `error` when the
+  collection call itself failed (fails open server-side, so the outage is still worth seeing).
+
+No DB/API change on `do-websocket`'s side — `conversation_traces.trace` is already a generic jsonb
+blob, this rides along inside it like everything else. `hasTraceContent()` updated accordingly.
+
+## 12. Fixed: `conversationId` alone is ambiguous across event types (implemented)
+
+`conversation_traces` had no `type` column — just `conversationId`/`userId`/`threadId`/`trace`. But
+`conversationId` is only unique *within* its own source table
+(`user_conversations`/`dashboard_agent_conversations`/`reports_conversations` each have their own
+independent id sequence), and dashboard/report trace capture (§11 above, §"Entity resolution
+capture") means all three tables can now have a saved trace. So a chat conversation #50 and a
+dashboard conversation #50 can both exist and both have a `conversation_traces` row — and
+`getConversationTrace(conversationId)` filtered on `conversationId` alone, `ORDER BY createdAt DESC
+LIMIT 1`. Whichever type's trace was saved more recently for that id would silently win, handed back
+regardless of which one was actually requested.
+
+Fix: `conversation_traces` gets a `type` column (`'chat_agent' | 'dashboard' | 'report'` — same
+values as `chat_analytics.type` / sdk-nodejs's `AnalyticsEventType`), defaulted to `'chat_agent'` for
+existing rows (correct backfill — chat was the only flow that wrote a trace before this session).
+`saveConversationTrace`/`getConversationTrace` and the `saveTrace`/`getTrace` collection ops now
+require `type` and filter/store on `(conversationId, type)` together, never `conversationId` alone.
+All three `sdk-nodejs` call sites (chat/dashboard/report) and SA-Analytics' `fetchConversationTrace`
+updated to pass it through. Migration generation/apply is manual (project-setup-mds/backend's
+`database/postgres` package), not run by this pass.
+
+## 13. Conversation history capture (implemented)
+
+`trace.conversationHistory` — the prior-turn context (if any) each flow already builds for itself
+and injects into its own prompt as `CONVERSATION_HISTORY`, captured as-is, no new fetch:
+
+- Chat — `thread.getConversationContext(...)` (`handlers/user-prompt-request.ts`), captured in
+  `MainAgent.buildSystemPrompt`.
+- Report — its own `conversationHistory` param, captured in `generate-report.ts`.
+- Dashboard-agent (Pi) — `previousResponseText` (last 2 prior runs on that dashboard, `freshSession`
+  mode only), captured in `dashboardAgent/collection.ts`.
+
+Absent/undefined when there was no prior context for that turn (new thread, or trimmed to nothing) —
+not distinguished from "not captured," same as every other optional field here. No DB/API change —
+rides inside the same generic `trace` jsonb blob.
+
+## 14. Explicitly deferred (future phases, not designed yet)
 
 - Dashboard-agent (Pi) trace — Pi runs as an opaque third-party coding-agent loop; its internal
   tool calls aren't currently observable from sdk-nodejs, and its session transcript is deleted

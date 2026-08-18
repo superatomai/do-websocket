@@ -69,6 +69,7 @@ export const users = pgTable(
     ssoSubject: varchar("sso_subject", { length: 500 }),
     role: userRoleEnum("role").default("member").notNull(),
     isActive: boolean("is_active").default(true).notNull(),
+    config: jsonb("config"), // free-form per-user config
     /**
      * Session revocation cutoff: tokens issued before this instant are rejected.
      * This is what makes logout actually invalidate a JWT rather than merely

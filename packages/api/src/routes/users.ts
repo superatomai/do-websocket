@@ -28,11 +28,12 @@ async function hashPassword(password: string): Promise<string> {
 usersRouter.post("/", async (c) => {
   const db = c.get("db");
   const orgId = c.req.param("orgId")!;
-  const { email, name, password, role } = await c.req.json<{
+  const { email, name, password, role, config } = await c.req.json<{
     email: string;
     name: string;
     password: string;
     role?: "super_admin" | "org_admin" | "member";
+    config?: unknown;
   }>();
 
   if (!email || !name || !password) {
@@ -72,7 +73,7 @@ usersRouter.post("/", async (c) => {
       const passwordHash = await hashPassword(password);
       const [reactivated] = await db
         .update(users)
-        .set({ name, passwordHash, role: role || "member", isActive: true, updatedAt: new Date() })
+        .set({ name, passwordHash, role: role || "member", config, isActive: true, updatedAt: new Date() })
         .where(eq(users.id, existing.id))
         .returning({
           id: users.id,
@@ -80,6 +81,7 @@ usersRouter.post("/", async (c) => {
           email: users.email,
           name: users.name,
           role: users.role,
+          config: users.config,
           isActive: users.isActive,
           createdAt: users.createdAt,
         });
@@ -98,6 +100,7 @@ usersRouter.post("/", async (c) => {
       name,
       passwordHash,
       role: role || "member",
+      config,
     })
     .returning({
       id: users.id,
@@ -105,6 +108,7 @@ usersRouter.post("/", async (c) => {
       email: users.email,
       name: users.name,
       role: users.role,
+      config: users.config,
       isActive: users.isActive,
       createdAt: users.createdAt,
     });
@@ -126,6 +130,7 @@ usersRouter.get("/", async (c) => {
       email: users.email,
       name: users.name,
       role: users.role,
+      config: users.config,
       isActive: users.isActive,
       createdAt: users.createdAt,
     })
@@ -150,6 +155,7 @@ usersRouter.get("/:userId", async (c) => {
       email: users.email,
       name: users.name,
       role: users.role,
+      config: users.config,
       isActive: users.isActive,
       createdAt: users.createdAt,
     })
@@ -199,6 +205,7 @@ usersRouter.put("/:userId", async (c) => {
     name?: string;
     role?: string;
     isActive?: boolean;
+    config?: unknown;
   }>();
 
   // Narrowed only after validation below; stays undefined when role is absent,
@@ -242,6 +249,7 @@ usersRouter.put("/:userId", async (c) => {
     name?: string;
     role?: "org_admin" | "member";
     isActive?: boolean;
+    config?: unknown;
     updatedAt: Date;
   } = { updatedAt: new Date() };
 
@@ -257,6 +265,10 @@ usersRouter.put("/:userId", async (c) => {
       return c.json({ error: "Invalid isActive" }, 400);
     }
     updates.isActive = body.isActive;
+  }
+
+  if (body.config !== undefined) {
+    updates.config = body.config;
   }
 
   // Role comes from the validated variable, never straight off the body.
@@ -275,6 +287,7 @@ usersRouter.put("/:userId", async (c) => {
       email: users.email,
       name: users.name,
       role: users.role,
+      config: users.config,
       isActive: users.isActive,
       updatedAt: users.updatedAt,
     });
