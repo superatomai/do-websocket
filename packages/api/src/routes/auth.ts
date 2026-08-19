@@ -359,6 +359,7 @@ auth.get("/me", authMiddleware, async (c) => {
         email: user.email,
         name: user.name,
         role: user.role,
+        config: user.config,
       },
       organization: null,
       apps: [],
@@ -444,6 +445,7 @@ auth.get("/me", authMiddleware, async (c) => {
       email: user.email,
       name: user.name,
       role: user.role,
+      config: user.config,
     },
     organization: org
       ? { id: org.id, name: org.name, slug: org.slug, icon: org.icon, defaultAppId: org.defaultAppId }

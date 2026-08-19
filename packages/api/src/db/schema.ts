@@ -69,6 +69,7 @@ export const users = pgTable(
     ssoSubject: varchar("sso_subject", { length: 500 }),
     role: userRoleEnum("role").default("member").notNull(),
     isActive: boolean("is_active").default(true).notNull(),
+    config: jsonb("config"), // free-form per-user config
     /**
      * Session revocation cutoff: tokens issued before this instant are rejected.
      * This is what makes logout actually invalidate a JWT rather than merely
@@ -315,6 +316,12 @@ export const chatAnalytics = pgTable(
     question: text("question"),
     sourcesUsed: jsonb("sources_used"), // [{ sourceId, sourceName, sourceType }]
     sqlGenerated: text("sql_generated"),
+    // The full saved-conversation response object — same shape as fusion-5's
+    // user_conversations.response ({ id, component, analysis, user_prompt,
+    // error?, scriptBinding? }), mirrored here centrally (same pattern as
+    // answer_feedback.answerSnapshot). Nullable — older SDK versions won't
+    // send it, and aborted/error turns may have a partial one.
+    response: jsonb("response"),
     // Dashboard-agent / report-generation identifier — null for chat rows.
     // One column for both, not separate dashboardId/reportId, since both are
     // just "apps" (see appTypeEnum above — dashboard/report/chat_agent/app

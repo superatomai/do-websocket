@@ -26,6 +26,10 @@ analyticsRouter.post("/analytics/chat", async (c) => {
     question?: string;
     sourcesUsed?: { sourceId: string; sourceName: string; sourceType: string }[];
     sqlGenerated?: string;
+    // The full saved-conversation response object — same shape as fusion-5's
+    // user_conversations.response — mirrored centrally, same pattern as
+    // answer_feedback.answerSnapshot. Optional/nullable.
+    response?: Record<string, any>;
     // Dashboard/report identifier — null for chat_agent rows (chat has no
     // per-message "app" concept to point at; see appId column comment).
     appId?: string;
@@ -63,6 +67,7 @@ analyticsRouter.post("/analytics/chat", async (c) => {
       question: body.question || null,
       sourcesUsed: body.sourcesUsed || null,
       sqlGenerated: body.sqlGenerated || null,
+      response: body.response || null,
       appId: body.appId || null,
       conversationId: body.conversationId ?? null,
       model: body.model,
@@ -296,6 +301,37 @@ analyticsRouter.get("/analytics/chat/trends", authMiddleware, adminOnly, async (
     .orderBy(desc(count()));
 
   return c.json({ dailyBreakdown, statusBreakdown });
+});
+
+/**
+ * GET /analytics/chat/:id
+ * Fetch a single analytics event's full row (including `analysis`), for the
+ * chat debug detail view (admin only). Registered after the more specific
+ * /summary and /trends paths above so those literal segments are never
+ * shadowed by this parametric route. Scoped by org the same way GET
+ * /analytics/chat is — `orgId` query param if provided (super admins), else
+ * the caller's own org — so a non-super-admin can't fetch another org's
+ * event by guessing its id.
+ */
+analyticsRouter.get("/analytics/chat/:id", authMiddleware, adminOnly, async (c) => {
+  const db = c.get("db");
+  const id = c.req.param("id");
+  const orgId = c.req.query("orgId") || c.get("orgId");
+
+  const conditions = [eq(chatAnalytics.id, id)];
+  if (orgId) conditions.push(eq(chatAnalytics.orgId, orgId));
+
+  const [event] = await db
+    .select()
+    .from(chatAnalytics)
+    .where(and(...conditions))
+    .limit(1);
+
+  if (!event) {
+    return c.json({ error: "Analytics event not found" }, 404);
+  }
+
+  return c.json(event);
 });
 
 export default analyticsRouter;

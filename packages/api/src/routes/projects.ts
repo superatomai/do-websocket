@@ -119,7 +119,7 @@ projectsRouter.put("/:projectId", async (c) => {
   const db = c.get("db");
   const orgId = c.req.param("orgId")!;
   const projectId = c.req.param("projectId");
-  const body = await c.req.json<{ name?: string; slug?: string; description?: string; icon?: string; designSystem?: Record<string, unknown>; config?: Record<string, unknown> }>();
+  const body = await c.req.json<{ name?: string; slug?: string; description?: string; icon?: string | null; designSystem?: Record<string, unknown>; config?: Record<string, unknown> }>();
 
   // Explicit allowlist. Spreading the body allowed setting any column — notably
   // `orgId`, which would move a project into another tenant.
@@ -127,7 +127,7 @@ projectsRouter.put("/:projectId", async (c) => {
     name?: string;
     slug?: string;
     description?: string;
-    icon?: string;
+    icon?: string | null;
     designSystem?: Record<string, unknown>;
     config?: Record<string, unknown>;
     updatedAt: Date;
@@ -152,7 +152,10 @@ projectsRouter.put("/:projectId", async (c) => {
     updates.description = body.description;
   }
   if (body.icon !== undefined) {
-    if (typeof body.icon !== "string") return c.json({ error: "Invalid icon" }, 400);
+    // null is a legitimate value here — it means "clear the icon", not "unset the field".
+    if (body.icon !== null && typeof body.icon !== "string") {
+      return c.json({ error: "Invalid icon" }, 400);
+    }
     updates.icon = body.icon;
   }
   if (body.designSystem !== undefined) updates.designSystem = body.designSystem;
