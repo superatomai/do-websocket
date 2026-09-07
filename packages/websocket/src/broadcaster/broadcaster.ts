@@ -522,7 +522,19 @@ export class Broadcaster implements DurableObject {
 	/**
 	 * Extract client metadata from WebSocket attachment
 	 */
-	private getClientInfoFromWebSocket(ws: WebSocket): { clientId: string; type: string } | null {
+	/**
+	 * Sender identity, read from the socket ATTACHMENT rather than from
+	 * `this.clients`.
+	 *
+	 * This distinction is load-bearing: `syncClientsFromWebSockets()` rebuilds
+	 * that map after hibernation and deliberately keeps only display metadata
+	 * (userAgent/origin), so identity read from it would be present on a fresh
+	 * connection and missing after a hibernation cycle — intermittent, and
+	 * failing open. The attachment is what survives hibernation.
+	 */
+	private getClientInfoFromWebSocket(
+		ws: WebSocket,
+	): { clientId: string; type: string; userId?: string; orgId?: string; role?: string; authenticated?: boolean } | null {
 		const metadata = (ws as any).deserializeAttachment();
 		if (!metadata || typeof metadata !== 'object') {
 			return null;
@@ -531,7 +543,16 @@ export class Broadcaster implements DurableObject {
 		const clientId = metadata.clientId;
 		const type = metadata.type;
 
-		return clientId && type ? { clientId, type } : null;
+		return clientId && type
+			? {
+					clientId,
+					type,
+					userId: metadata.userId ?? undefined,
+					orgId: metadata.orgId ?? undefined,
+					role: metadata.role ?? undefined,
+					authenticated: metadata.authenticated === true,
+				}
+			: null;
 	}
 
 	/**
@@ -617,6 +638,37 @@ export class Broadcaster implements DurableObject {
 		// Adding the clientid as from.id
 		if (ws_json_message.from && typeof ws_json_message.from === 'object') {
 			ws_json_message.from.id = senderId;
+		}
+
+		// Stamp the sender's verified identity onto the relayed message.
+		//
+		// The worker (src/index.ts) verifies the sa-api session JWT at handshake
+		// and the attachment records the result; this is the one hop that was
+		// missing, and it is what lets the data plane tell WHOSE data a query is
+		// for. Read from the attachment, not `this.clients` — see
+		// getClientInfoFromWebSocket().
+		//
+		// Only set when the session was actually verified. A socket with no
+		// session (a server component, or a browser on a deployment with
+		// WS_AUTH_ENFORCE off) leaves the field absent, and consumers must read
+		// absence as "unknown" rather than "trusted".
+		//
+		// !! NOT YET SAFE TO ENFORCE ON !!
+		// A client-supplied `authContext` is deliberately NOT stripped here yet.
+		// When the sender IS verified we overwrite it, so a forgery cannot
+		// survive that path — but an UNVERIFIED sender's own authContext passes
+		// through untouched. That is no worse than today (payload.userId is
+		// equally client-controlled and equally trusted), so it changes nothing
+		// now. It becomes a real hole the moment anything treats authContext as
+		// authoritative. Before enabling policy enforcement, delete the field
+		// unconditionally here first — the same discipline index.ts already
+		// applies to INTERNAL_IDENTITY_HEADERS.
+		if (clientInfo.authenticated && clientInfo.userId) {
+			ws_json_message.authContext = {
+				userId: clientInfo.userId,
+				...(clientInfo.orgId ? { orgId: clientInfo.orgId } : {}),
+				...(clientInfo.role ? { role: clientInfo.role } : {}),
+			};
 		}
 
 		const targetType = ws_json_message.to?.type;
