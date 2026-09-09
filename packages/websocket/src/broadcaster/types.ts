@@ -10,6 +10,8 @@ export interface MessageAuthContext {
 	userId: string;
 	orgId?: string;
 	role?: string;
+	/** Verified data-access config from the users table — see VerifiedSession.config. */
+	config?: unknown;
 }
 
 export interface BroadcastMessage {

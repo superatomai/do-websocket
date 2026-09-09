@@ -12,6 +12,24 @@ type DailyRequestsMap = Record<string, number>;
 // Per-project data-source registry, KEYED BY Data Source ID.
 type DataSourcesMap = Record<string, DataSourceRecord>;
 
+/**
+ * Decode the base64 config header the worker set from the verified session.
+ *
+ * Returns null on anything unexpected rather than throwing: a malformed header
+ * must not take the socket down, and null reads downstream as "no policy
+ * resolved", which the data seam already handles.
+ */
+function decodeSessionConfig(header: string | null): unknown {
+	if (!header) return null;
+	try {
+		const bytes = Uint8Array.from(atob(header), (c) => c.charCodeAt(0));
+		return JSON.parse(new TextDecoder().decode(bytes));
+	} catch {
+		console.warn('[broadcaster] could not decode x-sa-session-config; treating as no config');
+		return null;
+	}
+}
+
 export class Broadcaster implements DurableObject {
 	private state: DurableObjectState;
 	private env: Env;
@@ -331,6 +349,10 @@ export class Broadcaster implements DurableObject {
 				userId: request.headers.get('x-sa-session-user') || null,
 				orgId: request.headers.get('x-sa-session-org') || null,
 				role: request.headers.get('x-sa-session-role') || null,
+				// The verified data-access config, decoded from the base64 header the
+				// worker set. Stored on the attachment (not this.clients) so it
+				// survives hibernation, exactly like userId/role.
+				config: decodeSessionConfig(request.headers.get('x-sa-session-config')),
 				userAgent: request.headers.get('User-Agent') || 'unknown',
 				origin: request.headers.get('Origin') || 'unknown'
 			};
@@ -534,7 +556,7 @@ export class Broadcaster implements DurableObject {
 	 */
 	private getClientInfoFromWebSocket(
 		ws: WebSocket,
-	): { clientId: string; type: string; userId?: string; orgId?: string; role?: string; authenticated?: boolean } | null {
+	): { clientId: string; type: string; userId?: string; orgId?: string; role?: string; config?: unknown; authenticated?: boolean } | null {
 		const metadata = (ws as any).deserializeAttachment();
 		if (!metadata || typeof metadata !== 'object') {
 			return null;
@@ -550,6 +572,7 @@ export class Broadcaster implements DurableObject {
 					userId: metadata.userId ?? undefined,
 					orgId: metadata.orgId ?? undefined,
 					role: metadata.role ?? undefined,
+					config: metadata.config ?? undefined,
 					authenticated: metadata.authenticated === true,
 				}
 			: null;
@@ -653,21 +676,21 @@ export class Broadcaster implements DurableObject {
 		// WS_AUTH_ENFORCE off) leaves the field absent, and consumers must read
 		// absence as "unknown" rather than "trusted".
 		//
-		// !! NOT YET SAFE TO ENFORCE ON !!
-		// A client-supplied `authContext` is deliberately NOT stripped here yet.
-		// When the sender IS verified we overwrite it, so a forgery cannot
-		// survive that path — but an UNVERIFIED sender's own authContext passes
-		// through untouched. That is no worse than today (payload.userId is
-		// equally client-controlled and equally trusted), so it changes nothing
-		// now. It becomes a real hole the moment anything treats authContext as
-		// authoritative. Before enabling policy enforcement, delete the field
-		// unconditionally here first — the same discipline index.ts already
-		// applies to INTERNAL_IDENTITY_HEADERS.
+		// Deleted UNCONDITIONALLY before we set our own, the same discipline
+		// index.ts applies to INTERNAL_IDENTITY_HEADERS. A verified sender's
+		// forgery was already overwritten below, but an UNVERIFIED sender's own
+		// authContext used to pass straight through. That was tolerable while the
+		// field carried identity alone and payload.userId was equally trusted. It
+		// is not tolerable now that it carries `config`: a forged authContext
+		// would be a forged authorization policy.
+		delete ws_json_message.authContext;
+
 		if (clientInfo.authenticated && clientInfo.userId) {
 			ws_json_message.authContext = {
 				userId: clientInfo.userId,
 				...(clientInfo.orgId ? { orgId: clientInfo.orgId } : {}),
 				...(clientInfo.role ? { role: clientInfo.role } : {}),
+				...(clientInfo.config != null ? { config: clientInfo.config } : {}),
 			};
 		}
 
